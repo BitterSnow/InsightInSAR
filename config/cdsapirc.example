@@ -1,0 +1,9 @@
+# CDS (Copernicus Climate Data Store) API 配置
+# MintPy/PyAPS 对流层校正 (ERA5) 会读取 ~/.cdsapirc
+# 使用前请复制到用户主目录并重命名为 .cdsapirc：
+#   Windows: copy 到 C:\Users\<你的用户名>\.cdsapirc
+#   WSL:     copy 到 ~/.cdsapirc  (即 /home/<用户>/.cdsapirc)
+# 若 CDS 要求 uid:api-key 格式，请将 key 改为 <你的uid>:<api-key>
+# 可用脚本写入主目录: python scripts/setup_cdsapirc.py --key "你的key"
+url: https://cds.climate.copernicus.eu/api
+key: YOUR_UID:YOUR_API_KEY

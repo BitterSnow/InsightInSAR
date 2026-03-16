@@ -1,0 +1,13 @@
+stackSentinel diagnostic: minimal PATH vs PATH with UCRT64
+
+============================================================
+Run 1: MINIMAL PATH (no UCRT64)
+Command: D:\env\miniconda3\envs\isce2-build\python.exe d:\coding\insar-system\lib\isce2-main\contrib\stack\topsStack\stackSentinel.py -s d:\coding\insar-system\data\radar -o d:\coding\insar-system\data\orbit -a d:\coding\insar-system\data\auxcal -w D:\processing\tianfu\processing -d d:\coding\insar-system\data\dem\demLat_N30_N33_Lon_E101_E105.dem -p vv -W interferogram -n 1 -C geometry -c 1 --num_proc 1 -b 31.72 32.199 101.78 102.09
+Exit code: 3228369023
+
+============================================================
+Run 2: PATH with UCRT64
+Command: D:\env\miniconda3\envs\isce2-build\python.exe d:\coding\insar-system\lib\isce2-main\contrib\stack\topsStack\stackSentinel.py -s d:\coding\insar-system\data\radar -o d:\coding\insar-system\data\orbit -a d:\coding\insar-system\data\auxcal -w D:\processing\tianfu\processing -d d:\coding\insar-system\data\dem\demLat_N30_N33_Lon_E101_E105.dem -p vv -W interferogram -n 1 -C geometry -c 1 --num_proc 1 -b 31.72 32.199 101.78 102.09
+Exit code: 3228369023
+
+-> Minimal PATH exit: 3228369023, With UCRT64 exit: 3228369023

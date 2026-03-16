@@ -1,0 +1,26 @@
+# MintPy time-series dependencies (install in same env as ISCE2, e.g. isce2-build).
+# Install: pip install -r desktop/requirements-mintpy.txt
+#
+# Omitted on Windows (build requires Fortran / eccodes):
+#   pysolid  - solid earth tides (correct_SET step); need CMake+Fortran
+#   pyaps3   - tropo delay (correct_troposphere ERA5); needs pygrib/eccodes
+# If you need them: install via conda (e.g. conda install -c conda-forge pysolid pygrib) or build eccodes/Fortran first.
+
+argcomplete
+cartopy
+cvxopt
+dask>=1.0
+h5py
+joblib
+lxml
+matplotlib
+numpy
+pykml>=0.2
+pyproj
+pyresample
+requests
+rich
+scikit-image
+scipy
+shapely
+utm

@@ -1,0 +1,7 @@
+# Desktop + ISCE direct (run with isce2-build Python). No API/Redis.
+# Install in isce2-build: pip install -r desktop/requirements-isce.txt
+PySide6>=6.6.0
+pydantic>=2
+geopandas>=0.14
+shapely>=2
+PyYAML>=6.0

@@ -1,0 +1,62 @@
+[2026/03/12 ���� 18:25:59.99] start 
+ 
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "D:\coding\insar-system\desktop\main.py", line 84, in <module>
+    _file_handler = logging.FileHandler(_log_file, mode="a", encoding="utf-8")
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\env\python311\Lib\logging\__init__.py", line 1181, in __init__
+    StreamHandler.__init__(self, self._open())
+                                 ^^^^^^^^^^^^
+  File "D:\env\python311\Lib\logging\__init__.py", line 1213, in _open
+    return open_func(self.baseFilename, self.mode,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+PermissionError: [Errno 13] Permission denied: 'D:\\coding\\insar-system\\logs\\desktop.log'
+[2026/03/12 ���� 18:27:29.85] start 
+ 
+2026-03-12 18:27:40,727 - backend.scripts.subswath_detector - INFO - 初始化Subswath检测器
+2026-03-12 18:27:40,727 - backend.scripts.subswath_detector - INFO -   Sentinel-1数据: E:\yanjiang21_62\S1C_IW_SLC__1SDV_20251122T230428_20251122T230455_005133_00A2D7_B23D.zip
+2026-03-12 18:27:40,727 - backend.scripts.subswath_detector - INFO -   任务区bbox_snwe: (27.8, 27.86, 103.45, 103.51)
+2026-03-12 18:27:40,727 - backend.scripts.subswath_detector - INFO - 任务区边界框(由bbox_snwe): (103.450000, 27.800000) - (103.510000, 27.860000)
+2026-03-12 18:27:40,727 - backend.scripts.subswath_detector - INFO - 解析Sentinel-1 SAFE数据...
+2026-03-12 18:27:40,740 - backend.scripts.subswath_detector - INFO - 找到 24 个annotation文件
+2026-03-12 18:27:40,740 - backend.scripts.subswath_detector - INFO - 解析subswath 2...
+2026-03-12 18:27:40,779 - backend.scripts.subswath_detector - INFO - Subswath 2 覆盖范围: (102.437545, 27.355572) - (103.744626, 29.029441)
+2026-03-12 18:27:40,779 - backend.scripts.subswath_detector - INFO - 解析subswath 3...
+2026-03-12 18:27:40,827 - backend.scripts.subswath_detector - INFO - Subswath 3 覆盖范围: (101.671770, 27.439723) - (102.874088, 29.257496)
+2026-03-12 18:27:40,827 - backend.scripts.subswath_detector - INFO - 解析subswath 1...
+2026-03-12 18:27:40,846 - backend.scripts.subswath_detector - INFO - Subswath 1 覆盖范围: (103.316703, 27.273321) - (104.615233, 28.946688)
+[2026/03/13 ���� 15:32:59.25] start 
+ 
+2026-03-13 15:33:15,290 - backend.scripts.subswath_detector - INFO - 初始化Subswath检测器
+2026-03-13 15:33:15,291 - backend.scripts.subswath_detector - INFO -   Sentinel-1数据: E:\yanjiang21_62\S1C_IW_SLC__1SDV_20251122T230428_20251122T230455_005133_00A2D7_B23D.zip
+2026-03-13 15:33:15,292 - backend.scripts.subswath_detector - INFO -   任务区bbox_snwe: (27.8, 27.86, 103.45, 103.51)
+2026-03-13 15:33:15,292 - backend.scripts.subswath_detector - INFO - 任务区边界框(由bbox_snwe): (103.450000, 27.800000) - (103.510000, 27.860000)
+2026-03-13 15:33:15,292 - backend.scripts.subswath_detector - INFO - 解析Sentinel-1 SAFE数据...
+2026-03-13 15:33:15,304 - backend.scripts.subswath_detector - INFO - 找到 24 个annotation文件
+2026-03-13 15:33:15,304 - backend.scripts.subswath_detector - INFO - 解析subswath 2...
+2026-03-13 15:33:15,334 - backend.scripts.subswath_detector - INFO - Subswath 2 覆盖范围: (102.437545, 27.355572) - (103.744626, 29.029441)
+2026-03-13 15:33:15,334 - backend.scripts.subswath_detector - INFO - 解析subswath 3...
+2026-03-13 15:33:15,367 - backend.scripts.subswath_detector - INFO - Subswath 3 覆盖范围: (101.671770, 27.439723) - (102.874088, 29.257496)
+2026-03-13 15:33:15,368 - backend.scripts.subswath_detector - INFO - 解析subswath 1...
+2026-03-13 15:33:15,378 - backend.scripts.subswath_detector - INFO - Subswath 1 覆盖范围: (103.316703, 27.273321) - (104.615233, 28.946688)
+2026-03-13 15:33:15,392 - backend.scripts.subswath_detector - INFO - Subswath 1 与任务区相交，需要处理
+2026-03-13 15:33:15,392 - backend.scripts.subswath_detector - INFO - Subswath 2 与任务区相交，需要处理
+2026-03-13 15:33:15,392 - backend.scripts.subswath_detector - INFO - Subswath 3 与任务区不相交，跳过
+2026-03-13 15:33:15,392 - backend.scripts.subswath_detector - INFO - 检测完成，需要处理的subswath: [1, 2]
+libpng warning: iCCP: cHRM chunk does not match sRGB
+[2026/03/13 ���� 15:41:55.64] start 
+ 
+libpng warning: iCCP: cHRM chunk does not match sRGB
+[2026/03/13 ���� 16:49:42.62] start 
+ 
+libpng warning: iCCP: cHRM chunk does not match sRGB
+[2026/03/16 ��һ 10:17:21.99] start 
+ 
+[2026/03/16 ��һ 11:34:44.71] start 
+ 
+libpng warning: iCCP: cHRM chunk does not match sRGB
+[2026/03/16 ��һ 16:13:43.67] start 
+ 
+libpng warning: iCCP: cHRM chunk does not match sRGB
