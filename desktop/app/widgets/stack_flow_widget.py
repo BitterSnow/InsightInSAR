@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QSplitter,
 )
-from PySide6.QtCore import Qt, QThread, Signal, Slot
+from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtCore import QSize
 
@@ -47,6 +47,7 @@ from desktop.app.styles import (
     FLOW_BTN_RUN_FROM_HOVER,
     FLOW_BTN_NAV,
     FLOW_BTN_NAV_HOVER,
+    StatusColumnDelegate,
     apply_status_style,
     flow_button_stylesheet,
 )
@@ -248,6 +249,10 @@ class StackFlowWidget(QWidget):
         header.resizeSection(5, 165)                                             # 操作：运行、目录、清理 三钮，留足宽度
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        # 状态列：保持自定义颜色/加粗，不被主题的选中态覆盖
+        self._table.setItemDelegateForColumn(2, StatusColumnDelegate(self._table))
+        # 单步运行期间锁定选中行，避免点击/焦点切换导致“跳行”
+        self._table.itemSelectionChanged.connect(self._on_table_selection_changed)
 
         # 执行日志：淡框与其他区域区分，标题弱化
         self._log_frame = QFrame()
@@ -694,22 +699,38 @@ class StackFlowWidget(QWidget):
             return
         if self._single_step_worker and self._single_step_worker.isRunning():
             return
+        # 先锁定运行行，避免后续禁用按钮导致焦点跳转把选中行带跑
+        self._single_step_index = index
+        self._enforce_running_row_selection()
         step = self._steps[index]
         step_id = step.get("id", "")
         self._set_buttons_enabled(False)
+        # 让 Qt 完成可能的焦点转移后，再强制拉回一次（下一帧）
+        QTimer.singleShot(0, self._enforce_running_row_selection)
         self._update_step_status(index, STATUS_RUNNING)
         self._update_status_tag(True)
         self._log_edit.clear()
         self._progress_bar.setValue(0)
         self._progress_pct_label.setText("0%")
         self._log_edit.appendPlainText(f"正在运行: {step.get('name', step_id)} …")
-
-        self._single_step_index = index
         self._step_start_time = time.time()
         self._single_step_worker = StackSingleStepWorker(self._work_dir, step_id, self)
         self._single_step_worker.progress_updated.connect(self._on_single_step_progress)
         self._single_step_worker.step_finished.connect(self._on_single_step_finished)
         self._single_step_worker.start()
+
+    def _enforce_running_row_selection(self) -> None:
+        """强制将选中行保持在正在运行的单步行上。"""
+        idx = self._single_step_index
+        if idx < 0 or idx >= self._table.rowCount():
+            return
+        self._table.blockSignals(True)
+        try:
+            self._table.setCurrentCell(idx, 0)
+            self._table.selectRow(idx)
+            self._table.setFocus()
+        finally:
+            self._table.blockSignals(False)
 
     def _on_single_step_progress(self, pct: float, msg: str) -> None:
         self._progress_bar.setValue(int(pct))
@@ -719,6 +740,12 @@ class StackFlowWidget(QWidget):
             self._row_progress_bars[self._single_step_index].setVisible(True)
         if msg:
             self._log_edit.appendPlainText(msg)
+
+    def _on_table_selection_changed(self) -> None:
+        """单步运行期间锁定当前选中行。"""
+        if self._single_step_worker and self._single_step_worker.isRunning() and self._single_step_index >= 0:
+            if self._table.currentRow() != self._single_step_index:
+                self._enforce_running_row_selection()
 
     def _on_single_step_finished(self, success: bool, error_message: str) -> None:
         idx = self._single_step_index
@@ -743,6 +770,11 @@ class StackFlowWidget(QWidget):
             self._progress_pct_label.setText("100%")
             self._log_edit.appendPlainText("步骤完成。")
             self._save_step_state()
+            # 单步成功后再自动跳到下一行
+            next_row = min(idx + 1, self._table.rowCount() - 1)
+            if next_row != idx and next_row >= 0:
+                self._table.setCurrentCell(next_row, 0)
+                self._table.selectRow(next_row)
         else:
             self._update_step_status(idx, STATUS_FAIL)
             self._save_step_state()

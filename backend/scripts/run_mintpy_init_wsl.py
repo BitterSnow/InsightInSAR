@@ -26,9 +26,11 @@ def main() -> int:
         print(json.dumps({"success": False, "error_message": "缺少 work_dir"}), file=sys.stderr)
         return 1
     sys.path.insert(0, os.environ.get("INSAR_PROJECT_ROOT", "."))
-    from backend.services.mintpy_processing_service import init_mintpy_workdir
+    # IMPORTANT: this script runs INSIDE WSL. Call the local initializer, not the Windows->WSL bridge,
+    # otherwise it would recurse and hang.
+    from backend.services.mintpy_processing_service import init_mintpy_workdir_local
 
-    result = init_mintpy_workdir(
+    result = init_mintpy_workdir_local(
         work_dir=work_dir,
         stack_work_dir=stack_work_dir,
         stack_product_dir=stack_product_dir,

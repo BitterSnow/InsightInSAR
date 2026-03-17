@@ -9,11 +9,18 @@ import re
 import subprocess
 import threading
 import time
+import sys
 from typing import Callable, Dict, List, Optional
 
-# Windows 上显式使用 wsl.exe，避免部分环境下列出 "wsl" 时触发 Permission denied
+# Windows 上优先使用 System32 下 wsl.exe 的完整路径，避免 PATH 受限或策略拦截导致权限错误
 def _wsl_executable() -> str:
-    return "wsl.exe" if os.name == "nt" else "wsl"
+    if os.name != "nt":
+        return "wsl"
+    sysroot = os.environ.get("SystemRoot", "C:\\Windows")
+    full = os.path.join(sysroot, "System32", "wsl.exe")
+    if os.path.isfile(full):
+        return full
+    return "wsl.exe"
 
 # 是否启用 WSL：环境变量 INSAR_USE_WSL=1 或 true/yes 时启用；未设置但在应用内（INSAR_PROJECT_ROOT 已设）时也视为启用
 def use_wsl() -> bool:
@@ -47,6 +54,22 @@ def windows_path_to_wsl(windows_path: str) -> str:
         rest = (m.group(2) or "").strip().strip("/")
         return "/mnt/" + drive + ("/" + rest if rest else "")
     return s.replace("\\", "/")
+
+
+def wsl_path_to_windows(wsl_path: str) -> str:
+    """
+    Convert a WSL path like /mnt/d/foo/bar to a Windows path like D:\\foo\\bar.
+    If input is not a /mnt/<drive>/ path, return as-is.
+    """
+    if not wsl_path or not isinstance(wsl_path, str):
+        return wsl_path
+    s = wsl_path.strip().replace("\\", "/")
+    m = re.match(r"^/mnt/([a-zA-Z])/(.*)$", s)
+    if not m:
+        return wsl_path
+    drive = m.group(1).upper()
+    rest = m.group(2).replace("/", "\\")
+    return f"{drive}:\\{rest}" if rest else f"{drive}:\\"
 
 
 def get_wsl_distro() -> Optional[str]:
@@ -86,6 +109,10 @@ def build_wsl_argv(
             parts.append(f"source '{safe}'")
     parts.append(bash_cmd)
     inner = " && ".join(parts)
+    # 若本进程本身已在 Linux/WSL 内运行，则无需再通过 wsl.exe 桥接，直接 bash 执行即可
+    if os.name != "nt":
+        return ["bash", "-lc", inner]
+
     argv = [_wsl_executable()]
     if wsl_distro:
         argv.extend(["-d", wsl_distro])
@@ -134,10 +161,17 @@ def run_wsl(
                 encoding="utf-8",
                 errors="replace",
             )
-            # 打包为 exe 在 Windows 上运行时，默认隐藏 wsl.exe 控制台窗口
             if hasattr(subprocess, "CREATE_NO_WINDOW") and os.name == "nt":
                 kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-            proc = subprocess.Popen(argv, **kwargs)
+            try:
+                proc = subprocess.Popen(argv, **kwargs)
+            except (OSError, PermissionError):
+                # 部分环境（杀毒/组策略）会拦截带 CREATE_NO_WINDOW 的子进程，去掉该标志重试一次
+                if "creationflags" in kwargs:
+                    del kwargs["creationflags"]
+                    proc = subprocess.Popen(argv, **kwargs)
+                else:
+                    raise
             lines: List[str] = []
             last_output_time: List[float] = [time.monotonic()]
 
@@ -211,7 +245,14 @@ def run_wsl(
             )
             if hasattr(subprocess, "CREATE_NO_WINDOW") and os.name == "nt":
                 kwargs_run["creationflags"] = subprocess.CREATE_NO_WINDOW
-            result = subprocess.run(argv, **kwargs_run)
+            try:
+                result = subprocess.run(argv, **kwargs_run)
+            except (OSError, PermissionError):
+                if "creationflags" in kwargs_run:
+                    del kwargs_run["creationflags"]
+                    result = subprocess.run(argv, **kwargs_run)
+                else:
+                    raise
             return {
                 "success": result.returncode == 0,
                 "returncode": result.returncode,
@@ -229,28 +270,54 @@ def run_wsl(
         }
     except (OSError, PermissionError) as e:
         err_msg = str(e)
-        if "13" in err_msg or "Permission denied" in err_msg or "权限" in err_msg:
+        errno_val = getattr(e, "errno", None)
+        winerror_val = getattr(e, "winerror", None)
+        argv0 = argv[0] if argv else ""
+        argv0_exists = False
+        try:
+            argv0_exists = bool(argv0) and os.path.isfile(argv0)
+        except Exception:
+            argv0_exists = False
+        runtime = f"os.name={os.name}, platform={sys.platform}, exe={sys.executable}"
+        # 仅当确认为权限/拒绝访问时才提示「权限不足」；其余情况直接展示原始错误，便于排查
+        is_permission = (
+            errno_val in (5, 13)
+            or winerror_val == 5
+            or "permission denied" in err_msg.lower()
+            or "access is denied" in err_msg.lower()
+            or "access denied" in err_msg.lower()
+            or "拒绝访问" in err_msg
+            or "权限不足" in err_msg
+        )
+        if is_permission:
+            hint = "无法执行 WSL（权限不足或被拦截）。请确认已安装 WSL、尝试以管理员身份运行，或检查杀毒软件/组策略是否阻止运行 wsl。"
+            detail = f"（{runtime}; wsl可执行文件: {argv0!r}, exists={argv0_exists}; 原始错误: {err_msg}）"
             return {
                 "success": False,
                 "returncode": -1,
                 "stdout": "",
                 "stderr": "",
-                "error_message": "无法执行 WSL（权限不足或被拦截）。请确认已安装 WSL、尝试以管理员身份运行，或检查杀毒软件/组策略是否阻止运行 wsl。",
+                "error_message": hint + " " + detail,
             }
         return {
             "success": False,
             "returncode": -1,
             "stdout": "",
             "stderr": "",
-            "error_message": f"执行 WSL 时出错: {err_msg}",
+            "error_message": f"执行 WSL 时出错: {runtime}; {err_msg}",
         }
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
+        # 尽可能返回超时前的输出，帮助定位卡点
+        out = getattr(e, "stdout", "") or ""
+        err = getattr(e, "stderr", "") or ""
+        argv_s = " ".join([str(x) for x in (argv or [])])
+        t = "None" if timeout is None else str(timeout)
         return {
             "success": False,
             "returncode": -1,
-            "stdout": "",
-            "stderr": "",
-            "error_message": "命令超时",
+            "stdout": out,
+            "stderr": err,
+            "error_message": f"命令超时（{t}s）。argv={argv_s}",
         }
     except Exception as e:
         return {
@@ -335,7 +402,7 @@ def get_wsl_project_root() -> Optional[str]:
 
 def check_wsl_project_root() -> Dict[str, object]:
     """
-    检查 WSL 项目根是否正确：是否已设置、在 WSL 内是否存在、是否包含 lib/MintPy-main/src。
+    检查 WSL 项目根是否正确：是否已设置、在 WSL 内是否存在、是否包含 MintPy 源码（或已安装 mintpy）。
     返回 {"ok": bool, "message": str, "path": str|None, "mintpy_src_exists": bool|None}
     """
     root = get_wsl_project_root()
@@ -350,9 +417,13 @@ def check_wsl_project_root() -> Dict[str, object]:
     argv = [_wsl_executable()]
     if wsl_distro:
         argv.extend(["-d", wsl_distro])
-    # 在 WSL 内检查目录存在且包含 lib/MintPy-main/src；root 可能含 ~ 需展开
+    # 在 WSL 内检查目录存在且包含 MintPy 源码（优先 INSAR_WSL_MINTPY_SRC），或可 import mintpy
     safe_root = root.replace("'", "'\"'\"'")
-    bash_cmd = f"ROOT=\"$(eval echo {safe_root})\"; [ -d \"$ROOT\" ] && [ -d \"$ROOT/lib/MintPy-main/src\" ] && echo OK || echo FAIL"
+    bash_cmd = (
+        f"ROOT=\"$(eval echo {safe_root})\"; "
+        f"MINTPY_SRC=\"${{INSAR_WSL_MINTPY_SRC:-$ROOT/lib/MintPy-main/src}}\"; "
+        f"[ -d \"$ROOT\" ] && ( [ -d \"$MINTPY_SRC/mintpy\" ] || python3 -c \"import mintpy\" >/dev/null 2>&1 ) && echo OK || echo FAIL"
+    )
     argv.extend(["-e", "bash", "-c", bash_cmd])
     try:
         r = subprocess.run(

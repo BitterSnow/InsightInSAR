@@ -91,6 +91,23 @@ def _desktop_log_candidates():
         if local_app_data:
             yield Path(local_app_data) / "InSAR" / "logs" / "desktop.log"
 
+# UTF-8 BOM，便于 Windows 记事本等按 UTF-8 打开，避免中文乱码
+_UTF8_BOM = b"\xef\xbb\xbf"
+
+def _ensure_log_file_utf8_bom(path: Path) -> None:
+    """若日志文件为空或不存在，写入 UTF-8 BOM，确保以 UTF-8 打开时中文不乱码。"""
+    try:
+        if not path.exists() or path.stat().st_size == 0:
+            path.write_bytes(_UTF8_BOM)
+        else:
+            head = path.read_bytes()[:3]
+            if head != _UTF8_BOM:
+                # 已有内容但无 BOM：在文件头插入 BOM（旧文件可能被误读为 GBK，新写入统一 UTF-8）
+                body = path.read_bytes()
+                path.write_bytes(_UTF8_BOM + body)
+    except (OSError, PermissionError):
+        pass
+
 _root_logger = logging.getLogger()
 _root_logger.setLevel(logging.DEBUG)
 _log_file = None
@@ -99,7 +116,8 @@ for _log_file in _desktop_log_candidates():
     _log_dir = _log_file.parent
     try:
         _log_dir.mkdir(parents=True, exist_ok=True)
-        _file_handler = logging.FileHandler(_log_file, mode="a", encoding="utf-8-sig")
+        _ensure_log_file_utf8_bom(_log_file)
+        _file_handler = logging.FileHandler(_log_file, mode="a", encoding="utf-8")
         _file_handler.setLevel(logging.DEBUG)
         _file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
         _root_logger.addHandler(_file_handler)

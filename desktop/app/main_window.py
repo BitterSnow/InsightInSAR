@@ -1,5 +1,5 @@
 """
-主窗口：顶栏（Logo + 项目菜单）、侧栏（工程树）、主内容区。与 Web 端布局与交互一致。
+主窗口：顶栏（Logo + 菜单栏）、侧栏（工程树）、主内容区。与 Web 端布局与交互一致。
 """
 from __future__ import annotations
 
@@ -151,7 +151,7 @@ class MainWindow(QMainWindow):
         self._connect_project_signals()
 
     def _build_menubar(self) -> None:
-        """标准菜单栏：文件、项目、视图、帮助，风格与专业数据处理软件一致。"""
+        """标准菜单栏：文件、工具、视图、帮助，风格与专业数据处理软件一致。"""
         menubar = self.menuBar()
         menubar.setNativeMenuBar(False)
 
@@ -168,14 +168,8 @@ class MainWindow(QMainWindow):
         act_quit.triggered.connect(self.close)
         file_menu.addAction(act_quit)
 
-        # 项目
-        project_menu = menubar.addMenu("项目(&P)")
-        act_open_p = QAction(icon_open_folder(), "打开工程(&O)...", self)
-        act_open_p.triggered.connect(self._on_open_project)
-        project_menu.addAction(act_open_p)
-        act_new_p = QAction(icon_new_folder(), "新建工程(&N)...", self)
-        act_new_p.triggered.connect(self._on_new_project)
-        project_menu.addAction(act_new_p)
+        # 工具（占位，暂不填充）
+        menubar.addMenu("工具(&T)")
 
         # 视图（占位，便于后续扩展）
         view_menu = menubar.addMenu("视图(&V)")
@@ -264,7 +258,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._project_tree)
 
         # 空状态提示
-        self._empty_label = QLabel("暂无工程。通过菜单「文件」或「项目」→「打开工程」或「新建工程」")
+        self._empty_label = QLabel("暂无工程。通过菜单「文件」→「打开工程」或「新建工程」")
         self._empty_label.setStyleSheet("color: #94a3b8; font-size: 12px; padding: 12px;")
         self._empty_label.setWordWrap(True)
         layout.addWidget(self._empty_label)
@@ -495,6 +489,9 @@ class MainWindow(QMainWindow):
             mintpy_flow_action = QAction("打开时间序列分析", self)
             mintpy_flow_action.triggered.connect(lambda: self._on_open_mintpy_flow_for_project(node))
             menu.addAction(mintpy_flow_action)
+            mintpy_init_action = QAction("时间序列初始化/配置…", self)
+            mintpy_init_action.triggered.connect(lambda: self._on_open_mintpy_config_for_project(node))
+            menu.addAction(mintpy_init_action)
         
         elif node_type == "data":
             # 数据节点：暂无操作
@@ -702,6 +699,27 @@ class MainWindow(QMainWindow):
                 self._on_mintpy_flow_opened(work_dir)
                 return
         dlg = MintPyConfigDialog(self, default_stack_work_dir=None)
+        dlg.init_succeeded.connect(self._on_mintpy_flow_opened)
+        dlg.show()
+
+    def _on_open_mintpy_config_for_project(self, node: dict) -> None:
+        """
+        从工程节点打开时间序列初始化/配置对话框（即使已初始化也可重新初始化）。
+        若工程已有 stack_work_dir，则预填，便于自动填充 load 路径。
+        """
+        from .project_file import find_project_path, load_project_md_full
+        pdir = node.get("projectPath") or ""
+        pid = node.get("id") or ""
+        if not pdir or not pid:
+            return
+        default_stack_work_dir = None
+        proj_path = find_project_path(Path(pdir), pid)
+        if proj_path:
+            data = load_project_md_full(proj_path)
+            swd = (data.get("stack_work_dir") or "").strip()
+            if swd:
+                default_stack_work_dir = swd
+        dlg = MintPyConfigDialog(self, default_stack_work_dir=default_stack_work_dir)
         dlg.init_succeeded.connect(self._on_mintpy_flow_opened)
         dlg.show()
 

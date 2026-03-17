@@ -23,6 +23,10 @@ if defined INSAR_WSL_WORKSPACE_ROOT goto ws_done
 set INSAR_WSL_WORKSPACE_ROOT=~/insar-projects
 :ws_done
 
+if defined INSAR_WSL_MINTPY_SRC goto mintpy_done
+set INSAR_WSL_MINTPY_SRC=~/MintPy/MintPy/src
+:mintpy_done
+
 set WSL_EXTRA=
 if "%INSAR_WSL_DISTRO%"=="" goto py_check
 set WSL_EXTRA=-d %INSAR_WSL_DISTRO%

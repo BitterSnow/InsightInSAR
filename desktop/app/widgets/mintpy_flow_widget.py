@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGroupBox,
 )
-from PySide6.QtCore import Qt, QThread, Signal, Slot
+from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer
 from PySide6.QtGui import QFont
 
 from desktop.app.styles import (
@@ -37,6 +37,7 @@ from desktop.app.styles import (
     FLOW_BTN_RUN_CURRENT_HOVER,
     FLOW_BTN_RUN_FROM,
     FLOW_BTN_RUN_FROM_HOVER,
+    StatusColumnDelegate,
     apply_status_style,
     flow_button_stylesheet,
 )
@@ -128,7 +129,8 @@ class MintPyFlowWidget(QWidget):
 
     def __init__(self, work_dir: str, parent=None):
         super().__init__(parent)
-        self._work_dir = os.path.abspath(work_dir)
+        # work_dir should be Windows path in Desktop; normalize accidental WSL style to Windows path
+        self._work_dir = self._normalize_work_dir(work_dir)
         self._steps: List[Dict[str, Any]] = []
         self._step_status: List[str] = []
         self._worker: MintPyStepRunnerWorker | None = None
@@ -137,6 +139,19 @@ class MintPyFlowWidget(QWidget):
         self._single_step_index = -1
         self._build_ui()
         self._load_pipeline()
+
+    def _normalize_work_dir(self, work_dir: str) -> str:
+        wd = (work_dir or "").strip()
+        # If a WSL path is passed in on Windows, os.path.abspath will produce "D:\\mnt\\d\\..."
+        # Convert it back to a real Windows path first.
+        try:
+            if wd.startswith("/mnt/"):
+                from backend.services import wsl_runner
+
+                wd = wsl_runner.wsl_path_to_windows(wd)
+        except Exception:
+            pass
+        return os.path.abspath(wd) if wd else wd
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -170,6 +185,10 @@ class MintPyFlowWidget(QWidget):
         self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        # 状态列：保持自定义颜色/加粗，不被主题的选中态覆盖
+        self._table.setItemDelegateForColumn(2, StatusColumnDelegate(self._table))
+        # 单步运行期间锁定选中行，避免点击/焦点切换导致“跳行”
+        self._table.itemSelectionChanged.connect(self._on_table_selection_changed)
         layout.addWidget(self._table)
 
         progress_grp = QGroupBox("执行进度")
@@ -202,12 +221,6 @@ class MintPyFlowWidget(QWidget):
         btn_layout.addWidget(self._run_one_btn)
         btn_layout.addWidget(self._run_from_btn)
         btn_layout.addWidget(self._run_all_btn)
-        self._loading_spinner = QProgressBar()
-        self._loading_spinner.setRange(0, 0)
-        self._loading_spinner.setFixedSize(28, 28)
-        self._loading_spinner.setVisible(False)
-        self._loading_spinner.setStyleSheet("QProgressBar { border: none; background: transparent; }")
-        btn_layout.addWidget(self._loading_spinner)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
@@ -349,7 +362,6 @@ class MintPyFlowWidget(QWidget):
         self._run_one_btn.setEnabled(enabled)
         self._run_from_btn.setEnabled(enabled)
         self._run_all_btn.setEnabled(enabled)
-        self._loading_spinner.setVisible(not enabled)
         for i in range(self._table.rowCount()):
             for col in (3, 4, 5):
                 w = self._table.cellWidget(i, col)
@@ -369,19 +381,41 @@ class MintPyFlowWidget(QWidget):
             return
         if self._single_step_worker and self._single_step_worker.isRunning():
             return
+        # 先锁定运行行，避免后续禁用按钮导致焦点跳转把选中行带跑
+        self._single_step_index = index
+        self._enforce_running_row_selection()
         step = self._steps[index]
         step_id = step.get("id", "")
         self._set_buttons_enabled(False)
+        # 让 Qt 完成可能的焦点转移后，再强制拉回一次（下一帧）
+        QTimer.singleShot(0, self._enforce_running_row_selection)
         self._update_step_status(index, STATUS_RUNNING)
         self._log_edit.clear()
         self._progress_bar.setValue(0)
         self._log_edit.appendPlainText(f"正在运行: {step.get('name', step_id)} …")
-
-        self._single_step_index = index
         self._single_step_worker = MintPySingleStepWorker(self._work_dir, step_id, self)
         self._single_step_worker.progress_updated.connect(self._on_single_step_progress)
         self._single_step_worker.step_finished.connect(self._on_single_step_finished)
         self._single_step_worker.start()
+
+    def _enforce_running_row_selection(self) -> None:
+        """强制将选中行保持在正在运行的单步行上。"""
+        idx = self._single_step_index
+        if idx < 0 or idx >= self._table.rowCount():
+            return
+        self._table.blockSignals(True)
+        try:
+            self._table.setCurrentCell(idx, 0)
+            self._table.selectRow(idx)
+            self._table.setFocus()
+        finally:
+            self._table.blockSignals(False)
+
+    def _on_table_selection_changed(self) -> None:
+        """单步运行期间锁定当前选中行。"""
+        if self._single_step_worker and self._single_step_worker.isRunning() and self._single_step_index >= 0:
+            if self._table.currentRow() != self._single_step_index:
+                self._enforce_running_row_selection()
 
     def _on_single_step_progress(self, pct: float, msg: str) -> None:
         self._progress_bar.setValue(int(pct))
@@ -402,6 +436,8 @@ class MintPyFlowWidget(QWidget):
         if success:
             self._progress_bar.setValue(100)
             self._log_edit.appendPlainText("步骤完成。")
+            log_file = os.path.join(self._work_dir, "mintpy_step.log")
+            self._log_edit.appendPlainText(f"详细日志: {log_file}")
         else:
             self._progress_bar.setValue(0)
             self._log_edit.appendPlainText("")
@@ -487,10 +523,11 @@ class MintPyFlowWidget(QWidget):
             for i in range(self._running_from_index, len(self._steps)):
                 self._update_step_status(i, STATUS_SUCCESS)
             self._save_step_state()
+            self._log_edit.appendPlainText(f"详细日志: {os.path.join(self._work_dir, 'mintpy_step.log')}")
             QMessageBox.information(self, "执行结束", "全部步骤已完成。")
 
     def set_work_dir(self, work_dir: str) -> None:
-        self._work_dir = os.path.abspath(work_dir)
+        self._work_dir = self._normalize_work_dir(work_dir)
         self._work_dir_label.setText(self._work_dir)
         self._load_pipeline()
 

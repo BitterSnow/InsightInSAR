@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import glob
 import json
+import logging
 import os
 import re
 import shutil
@@ -17,6 +18,36 @@ _MINTPY_SRC = os.path.join(_PROJECT_ROOT, "lib", "MintPy-main", "src")
 _MINTPY_DEFAULTS = os.path.join(_MINTPY_SRC, "mintpy", "defaults")
 _TEMPLATE_DEFAULT = "smallbaselineApp.cfg"
 _TEMPLATE_PATH = os.path.join(_MINTPY_DEFAULTS, _TEMPLATE_DEFAULT)
+
+
+def _find_mintpy_template_path() -> Optional[str]:
+    """
+    Locate MintPy default template file path.
+    Prefer the vendored path under this repo; fallback to an installed/importable mintpy package.
+    """
+    if os.path.isfile(_TEMPLATE_PATH):
+        return _TEMPLATE_PATH
+    try:
+        # Python 3.9+: importlib.resources.files
+        import importlib.resources as ir  # type: ignore
+
+        p = ir.files("mintpy.defaults").joinpath(_TEMPLATE_DEFAULT)  # type: ignore[attr-defined]
+        as_path = str(p)
+        if os.path.isfile(as_path):
+            return as_path
+    except Exception:
+        pass
+    # Older MintPy layouts sometimes keep templates under mintpy/defaults directly
+    try:
+        import mintpy  # type: ignore
+
+        base = os.path.dirname(getattr(mintpy, "__file__", "") or "")
+        cand = os.path.join(base, "defaults", _TEMPLATE_DEFAULT)
+        if os.path.isfile(cand):
+            return cand
+    except Exception:
+        pass
+    return None
 
 # Default 13 steps from processDDH.ipynb (desktop default workflow)
 STEP_LIST_NOTEBOOK: List[str] = [
@@ -85,6 +116,12 @@ def _find_stack_root(work_dir: str) -> Optional[str]:
 def _validate_stack_paths(stack_root: str) -> tuple[bool, str]:
     """Check that stack_root contains expected topsStack dirs. Return (ok, warning_message)."""
     stack_root = os.path.abspath(stack_root)
+    # User may point to the merged/ directory directly; normalize to topsStack root (parent of merged)
+    # Expected: <stack_root>/merged and <stack_root>/reference
+    if os.path.basename(stack_root).lower() == "merged":
+        # if this directory looks like a topsStack merged/ output, its parent is the actual stack root
+        if os.path.isdir(os.path.join(stack_root, "geom_reference")) or os.path.isdir(os.path.join(stack_root, "interferograms")):
+            stack_root = os.path.abspath(os.path.dirname(stack_root))
     merged = os.path.join(stack_root, "merged")
     ref = os.path.join(stack_root, "reference")
     if not os.path.isdir(merged):
@@ -107,6 +144,23 @@ def _validate_stack_paths(stack_root: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _normalize_stack_root(stack_root: str) -> str:
+    """
+    Normalize topsStack root path.
+    Users/UI may pass the merged/ directory itself; in that case return its parent.
+    """
+    sr = (stack_root or "").strip()
+    if not sr:
+        return sr
+    # Keep WSL paths as-is (start with /), but we still want basename checks
+    base = os.path.basename(sr.rstrip("/\\")).lower()
+    if base == "merged":
+        parent = os.path.dirname(sr.rstrip("/\\"))
+        if parent:
+            return parent
+    return sr
+
+
 def init_mintpy_workdir(
     work_dir: str,
     stack_work_dir: Optional[str] = None,
@@ -118,6 +172,7 @@ def init_mintpy_workdir(
     work_dir may be Windows path; converted to WSL for init.
     """
     from backend.services import wsl_runner
+    logging.info("MintPy init: module=%s", __file__)
 
     if not _use_wsl():
         return {"success": False, "error_message": "仅支持 WSL 模式。请设置 INSAR_USE_WSL=1 并用 scripts/start_desktop_wsl.bat 启动。"}
@@ -136,13 +191,60 @@ def init_mintpy_workdir(
         "custom_template_path": (custom_template_path or "").strip() or None,
     })
     cmd = f"cd '{project_root}' && PYTHONPATH='.' INSAR_PROJECT_ROOT='{project_root}' python3 -m backend.scripts.run_mintpy_init_wsl"
-    result = wsl_runner.run_wsl(cmd, env_script=wsl_runner.get_wsl_env_script(), extra_env={"INSAR_MINTPY_INIT_JSON": init_json}, timeout=60)
+    # 初始化一般很快；若环境需要首次激活/导入，可通过 INSAR_MINTPY_INIT_TIMEOUT 调整（秒）
+    init_timeout = 60
+    try:
+        v = (os.environ.get("INSAR_MINTPY_INIT_TIMEOUT") or "").strip()
+        if v:
+            init_timeout = int(v)
+    except Exception:
+        init_timeout = 60
+
+    # 先做一次快速探针：验证 WSL 可执行 + env_script source 是否会卡住。
+    # 若探针超时，基本可判定卡在 WSL/环境脚本层面，而非 MintPy 初始化本身。
+    env_script = wsl_runner.get_wsl_env_script()
+    probe_timeout = min(20, init_timeout) if init_timeout is not None else 20
+    logging.info("MintPy init: start probe timeout=%ss env_script=%s", probe_timeout, env_script)
+    probe = wsl_runner.run_wsl(
+        "echo __INSAR_WSL_PROBE_OK__",
+        env_script=env_script,
+        timeout=probe_timeout,
+    )
+    logging.info(
+        "MintPy init: probe done success=%s returncode=%s error=%s",
+        probe.get("success"),
+        probe.get("returncode"),
+        (probe.get("error_message") or "").strip(),
+    )
+    if not probe.get("success"):
+        msg = (probe.get("error_message") or "WSL 探针失败").strip()
+        return {
+            "success": False,
+            "error_message": f"WSL 环境探针失败（可能卡在 env 脚本或 WSL 启动）。{msg}",
+        }
+    logging.info("MintPy init: start init timeout=%ss work_dir=%s", init_timeout, work_dir_wsl)
+    result = wsl_runner.run_wsl(
+        cmd,
+        env_script=env_script,
+        extra_env={"INSAR_MINTPY_INIT_JSON": init_json},
+        timeout=init_timeout,
+    )
     if not result.get("success"):
         out = (result.get("stdout") or "").strip()
         for line in reversed(out.splitlines()):
             if line.strip().startswith("{"):
                 try:
-                    return json.loads(line)
+                    parsed = json.loads(line)
+                    # Convert returned work_dir back to Windows path for Desktop UI
+                    try:
+                        from backend.services import wsl_runner as _wr
+
+                        wd = parsed.get("work_dir")
+                        if isinstance(wd, str) and wd.strip().startswith("/mnt/"):
+                            parsed["work_dir"] = _wr.wsl_path_to_windows(wd.strip())
+                    except Exception:
+                        pass
+                    return parsed
                 except json.JSONDecodeError:
                     pass
         return {"success": False, "error_message": result.get("error_message", "WSL MintPy 初始化失败")}
@@ -150,10 +252,103 @@ def init_mintpy_workdir(
     for line in reversed(stdout.splitlines()):
         if line.strip().startswith("{"):
             try:
-                return json.loads(line)
+                parsed = json.loads(line)
+                try:
+                    from backend.services import wsl_runner as _wr
+
+                    wd = parsed.get("work_dir")
+                    if isinstance(wd, str) and wd.strip().startswith("/mnt/"):
+                        parsed["work_dir"] = _wr.wsl_path_to_windows(wd.strip())
+                except Exception:
+                    pass
+                return parsed
             except json.JSONDecodeError:
                 continue
     return {"success": False, "error_message": "WSL 未返回有效结果"}
+
+
+def init_mintpy_workdir_local(
+    work_dir: str,
+    stack_work_dir: Optional[str] = None,
+    stack_product_dir: Optional[str] = None,
+    custom_template_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Initialize MintPy work directory on the CURRENT filesystem (no WSL bridge).
+
+    This function is meant to run inside WSL (called by backend.scripts.run_mintpy_init_wsl),
+    but it also works on Windows if paths are accessible.
+    """
+    # Normalize paths (accept Windows-style paths like D:/... by converting to /mnt/d/...)
+    from backend.services import wsl_runner
+
+    work_dir = (work_dir or "").strip()
+    if not work_dir:
+        return {"success": False, "error_message": "缺少 work_dir"}
+    if (":" in work_dir[:3]) or ("\\" in work_dir):
+        work_dir = wsl_runner.windows_path_to_wsl(work_dir)
+
+    if stack_work_dir:
+        stack_work_dir = stack_work_dir.strip()
+        if (":" in stack_work_dir[:3]) or ("\\" in stack_work_dir):
+            stack_work_dir = wsl_runner.windows_path_to_wsl(stack_work_dir)
+    if stack_product_dir:
+        stack_product_dir = stack_product_dir.strip()
+        if (":" in stack_product_dir[:3]) or ("\\" in stack_product_dir):
+            stack_product_dir = wsl_runner.windows_path_to_wsl(stack_product_dir)
+    if custom_template_path:
+        custom_template_path = custom_template_path.strip()
+        if (":" in custom_template_path[:3]) or ("\\" in custom_template_path):
+            custom_template_path = wsl_runner.windows_path_to_wsl(custom_template_path)
+
+    try:
+        os.makedirs(work_dir, exist_ok=True)
+    except Exception as e:
+        return {"success": False, "error_message": f"创建工作目录失败: {e}", "work_dir": work_dir}
+
+    cfg_path = os.path.join(work_dir, _TEMPLATE_DEFAULT)
+    try:
+        if not os.path.isfile(cfg_path):
+            tpl = _find_mintpy_template_path()
+            if not tpl:
+                hint = (
+                    "未找到 MintPy 默认模板 smallbaselineApp.cfg。"
+                    "请在 WSL 侧准备 MintPy 源码或安装 mintpy 包，并可通过 INSAR_WSL_MINTPY_SRC 指向 MintPy 的 src 目录。"
+                )
+                return {"success": False, "error_message": hint, "work_dir": work_dir}
+            shutil.copyfile(tpl, cfg_path)
+    except Exception as e:
+        return {"success": False, "error_message": f"写入模板失败: {e}", "work_dir": work_dir}
+
+    # Determine stack root
+    stack_root = (stack_product_dir or "").strip() or (stack_work_dir or "").strip() or _find_stack_root(work_dir) or ""
+    stack_root = _normalize_stack_root(stack_root)
+    warning_msg = ""
+    if stack_root:
+        ok, warn = _validate_stack_paths(stack_root)
+        if not ok:
+            return {"success": False, "error_message": warn, "work_dir": work_dir}
+        warning_msg = warn
+        try:
+            base = os.path.basename(stack_root.rstrip("/\\")).lower()
+            auto_paths = _ISCE_TOPS_AUTO_PATHS_MERGED_ROOT if base == "merged" else _ISCE_TOPS_AUTO_PATHS
+            _rewrite_template_paths_to_absolute(cfg_path, stack_root, auto_paths=auto_paths)
+        except Exception as e:
+            return {"success": False, "error_message": f"重写 load 路径失败: {e}", "work_dir": work_dir}
+
+    # Merge custom template (optional)
+    if custom_template_path:
+        if not os.path.isfile(custom_template_path):
+            return {"success": False, "error_message": f"自定义模板不存在: {custom_template_path}", "work_dir": work_dir}
+        try:
+            _merge_template(cfg_path, custom_template_path)
+        except Exception as e:
+            return {"success": False, "error_message": f"合并自定义模板失败: {e}", "work_dir": work_dir}
+
+    out: Dict[str, Any] = {"success": True, "work_dir": work_dir}
+    if warning_msg:
+        out["warning"] = warning_msg
+    return out
 
 
 # Keys that are file/dir paths; do NOT rewrite processor, yes/no, etc.
@@ -184,6 +379,24 @@ _ISCE_TOPS_AUTO_PATHS = {
     "mintpy.load.bperpFile": "None",
 }
 
+_ISCE_TOPS_AUTO_PATHS_MERGED_ROOT = {
+    # Layout variant: reference/baselines/geom_reference/interferograms live directly under merged/
+    "mintpy.load.metaFile": "reference/IW*.xml",
+    "mintpy.load.baselineDir": "baselines",
+    "mintpy.load.unwFile": "interferograms/*/filt*.unw",
+    "mintpy.load.corFile": "interferograms/*/filt*.cor",
+    "mintpy.load.connCompFile": "interferograms/*/filt*.unw.conncomp",
+    "mintpy.load.intFile": "None",
+    "mintpy.load.demFile": "geom_reference/hgt.rdr",
+    "mintpy.load.lookupYFile": "geom_reference/lat.rdr",
+    "mintpy.load.lookupXFile": "geom_reference/lon.rdr",
+    "mintpy.load.incAngleFile": "geom_reference/los.rdr",
+    "mintpy.load.azAngleFile": "geom_reference/los.rdr",
+    "mintpy.load.shadowMaskFile": "geom_reference/shadowMask.rdr",
+    "mintpy.load.waterMaskFile": "geom_reference/waterMask.rdr",
+    "mintpy.load.bperpFile": "None",
+}
+
 
 def _stack_path_join(stack_root: str, rel: str) -> str:
     """Join stack_root with relative path. Use '/' when stack_root is WSL path (starts with /)."""
@@ -193,10 +406,15 @@ def _stack_path_join(stack_root: str, rel: str) -> str:
     return os.path.join(stack_root, rel)
 
 
-def _rewrite_template_paths_to_absolute(cfg_path: str, stack_root: str) -> None:
+def _rewrite_template_paths_to_absolute(
+    cfg_path: str,
+    stack_root: str,
+    auto_paths: Optional[Dict[str, str]] = None,
+) -> None:
     """Rewrite mintpy.load.* path options to absolute paths under stack_root. Replace 'auto' with ISCE tops paths."""
     if not stack_root.startswith("/"):
         stack_root = os.path.abspath(stack_root)
+    auto_paths = auto_paths or _ISCE_TOPS_AUTO_PATHS
     with open(cfg_path, "r", encoding="utf-8", errors="replace") as f:
         lines = f.readlines()
     out = []
@@ -220,8 +438,8 @@ def _rewrite_template_paths_to_absolute(cfg_path: str, stack_root: str) -> None:
             out.append(line)
             continue
         # When value is "auto", use ISCE tops default path under stack_root
-        if val.lower() == "auto" and key in _ISCE_TOPS_AUTO_PATHS:
-            auto_val = _ISCE_TOPS_AUTO_PATHS[key]
+        if val.lower() == "auto" and key in auto_paths:
+            auto_val = auto_paths[key]
             if auto_val == "None":
                 out.append(f"{key} = None\n")
             else:
@@ -327,7 +545,10 @@ def run_mintpy_step(
     project_root = wsl_runner.get_wsl_project_root()
     if not project_root:
         return {"success": False, "error_message": "WSL 模式下请设置 INSAR_WSL_PROJECT_ROOT", "step_id": step_id}
-    mintpy_src = f"{project_root.rstrip('/')}/lib/MintPy-main/src"
+    # MintPy source path inside WSL (prefer env override)
+    mintpy_src = (os.environ.get("INSAR_WSL_MINTPY_SRC") or "").strip()
+    if not mintpy_src:
+        mintpy_src = f"{project_root.rstrip('/')}/lib/MintPy-main/src"
     cmd = (
         f"cd '{project_root}' && PYTHONPATH=\"{mintpy_src}:.:${{PYTHONPATH:-}}\" python3 -m backend.scripts.run_mintpy_wsl step"
         f" --work_dir='{work_dir_wsl}' --step_id='{step_id}'"
