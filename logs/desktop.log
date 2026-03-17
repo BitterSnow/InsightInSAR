@@ -62,3 +62,13 @@ libpng warning: iCCP: cHRM chunk does not match sRGB
 libpng warning: iCCP: cHRM chunk does not match sRGB
 [2026/03/17 �ܶ�  9:06:28.02] start 
  
+[2026/03/17 �ܶ� 10:32:07.47] start 
+ 
+[2026/03/17 �ܶ� 10:37:04.92] start 
+ 
+[2026/03/17 �ܶ� 10:42:51.36] start 
+ 
+[2026/03/17 �ܶ� 10:48:53.96] start 
+ 
+2026-03-17 10:48:54,063 [WARNING] root: 无法写入日志文件（已尝试 D:\coding\insar-system\logs\desktop.log），错误将输出到 stderr。
+2026-03-17 10:49:52,147 [ERROR] root: MintPy 初始化失败: [Errno 13] Permission denied: 'wsl'

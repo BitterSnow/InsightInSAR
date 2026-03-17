@@ -11,10 +11,21 @@ import threading
 import time
 from typing import Callable, Dict, List, Optional
 
-# 是否启用 WSL：环境变量 INSAR_USE_WSL=1 或 true/yes 时启用
+# Windows 上显式使用 wsl.exe，避免部分环境下列出 "wsl" 时触发 Permission denied
+def _wsl_executable() -> str:
+    return "wsl.exe" if os.name == "nt" else "wsl"
+
+# 是否启用 WSL：环境变量 INSAR_USE_WSL=1 或 true/yes 时启用；未设置但在应用内（INSAR_PROJECT_ROOT 已设）时也视为启用
 def use_wsl() -> bool:
     v = (os.environ.get("INSAR_USE_WSL") or "").strip().lower()
-    return v in ("1", "true", "yes")
+    if v in ("1", "true", "yes"):
+        return True
+    if v in ("0", "false", "no"):
+        return False
+    # 未显式设置：若在 InSAR 应用上下文（由 start_desktop_wsl.bat 或 desktop.main 设置），默认启用 WSL
+    if os.environ.get("INSAR_PROJECT_ROOT"):
+        return True
+    return False
 
 
 def windows_path_to_wsl(windows_path: str) -> str:
@@ -75,7 +86,7 @@ def build_wsl_argv(
             parts.append(f"source '{safe}'")
     parts.append(bash_cmd)
     inner = " && ".join(parts)
-    argv = ["wsl"]
+    argv = [_wsl_executable()]
     if wsl_distro:
         argv.extend(["-d", wsl_distro])
     argv.extend(["-e", "bash", "-c", inner])
@@ -214,7 +225,24 @@ def run_wsl(
             "returncode": -1,
             "stdout": "",
             "stderr": "",
-            "error_message": f"无法启动 WSL: {e}",
+            "error_message": f"无法启动 WSL（未找到可执行文件）: {e}",
+        }
+    except (OSError, PermissionError) as e:
+        err_msg = str(e)
+        if "13" in err_msg or "Permission denied" in err_msg or "权限" in err_msg:
+            return {
+                "success": False,
+                "returncode": -1,
+                "stdout": "",
+                "stderr": "",
+                "error_message": "无法执行 WSL（权限不足或被拦截）。请确认已安装 WSL、尝试以管理员身份运行，或检查杀毒软件/组策略是否阻止运行 wsl。",
+            }
+        return {
+            "success": False,
+            "returncode": -1,
+            "stdout": "",
+            "stderr": "",
+            "error_message": f"执行 WSL 时出错: {err_msg}",
         }
     except subprocess.TimeoutExpired:
         return {
@@ -237,7 +265,7 @@ def run_wsl(
 def _get_wsl_default_env_script() -> Optional[str]:
     """当未设置 INSAR_WSL_ENV_SCRIPT 时，尝试解析 WSL 内 ~/insar-wsl/env_isce2.sh 是否存在并返回其绝对路径。"""
     try:
-        argv = ["wsl"]
+        argv = [_wsl_executable()]
         if get_wsl_distro():
             argv.extend(["-d", get_wsl_distro()])
         argv.extend([
@@ -267,13 +295,13 @@ def get_wsl_env_script() -> Optional[str]:
 
 
 def _resolve_windows_project_root_to_wsl() -> Optional[str]:
-    """用 wslpath 将 INSAR_PROJECT_ROOT（Windows 路径）转为 WSL 路径；失败返回 None。"""
+    """将 INSAR_PROJECT_ROOT（Windows 路径）转为 WSL 路径。先尝试 wslpath，失败则用本项目的 Windows→WSL 规则。"""
     win_root = (os.environ.get("INSAR_PROJECT_ROOT") or "").strip()
     if not win_root:
         return None
     win_path = win_root.replace("\\", "/").strip()
     wsl_distro = get_wsl_distro()
-    argv = ["wsl"]
+    argv = [_wsl_executable()]
     if wsl_distro:
         argv.extend(["-d", wsl_distro])
     argv.extend(["-e", "wslpath", "-a", win_path])
@@ -290,7 +318,8 @@ def _resolve_windows_project_root_to_wsl() -> Optional[str]:
             return (r.stdout or "").strip()
     except Exception:
         pass
-    return None
+    # wslpath 不可用或失败时，用与 windows_path_to_wsl 一致的规则推导（如 D:\x -> /mnt/d/x）
+    return windows_path_to_wsl(win_root)
 
 
 def get_wsl_project_root() -> Optional[str]:
@@ -318,7 +347,7 @@ def check_wsl_project_root() -> Dict[str, object]:
             "mintpy_src_exists": None,
         }
     wsl_distro = get_wsl_distro()
-    argv = ["wsl"]
+    argv = [_wsl_executable()]
     if wsl_distro:
         argv.extend(["-d", wsl_distro])
     # 在 WSL 内检查目录存在且包含 lib/MintPy-main/src；root 可能含 ~ 需展开
@@ -353,6 +382,20 @@ def check_wsl_project_root() -> Dict[str, object]:
         return {
             "ok": False,
             "message": "未找到 wsl 命令，请确认已安装 WSL。",
+            "path": root,
+            "mintpy_src_exists": None,
+        }
+    except (OSError, PermissionError) as e:
+        if "13" in str(e) or "Permission denied" in str(e):
+            return {
+                "ok": False,
+                "message": "无法执行 WSL（权限不足或被拦截）。请尝试以管理员身份运行或检查杀毒软件/组策略。",
+                "path": root,
+                "mintpy_src_exists": None,
+            }
+        return {
+            "ok": False,
+            "message": str(e),
             "path": root,
             "mintpy_src_exists": None,
         }

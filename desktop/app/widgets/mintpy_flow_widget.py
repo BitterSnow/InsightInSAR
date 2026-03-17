@@ -88,6 +88,7 @@ class MintPySingleStepWorker(QThread):
 
 class MintPyStepRunnerWorker(QThread):
     progress_updated = Signal(float, str)
+    step_completed = Signal(int, bool)  # step_index, success
     all_finished = Signal(bool, str)
 
     def __init__(self, work_dir: str, from_step_index: int, step_ids: List[str], parent=None):
@@ -103,11 +104,15 @@ class MintPyStepRunnerWorker(QThread):
             def progress_cb(pct: float, msg: str) -> None:
                 self.progress_updated.emit(pct, msg)
 
+            def step_done_cb(step_index: int, _step_id: str, success: bool) -> None:
+                self.step_completed.emit(step_index, success)
+
             result = run_mintpy_steps(
                 self._work_dir,
                 self._from_step_index,
                 step_ids=self._step_ids,
                 progress_callback=progress_cb,
+                step_completed_callback=step_done_cb,
             )
             if result.get("success"):
                 self.all_finished.emit(True, "")
@@ -414,7 +419,18 @@ class MintPyFlowWidget(QWidget):
 
     @Slot()
     def _on_run_all(self) -> None:
-        self._run_steps_from(0)
+        # 从未完成的步骤开始，已完成的跳过
+        first_incomplete = 0
+        for i in range(len(self._steps)):
+            if self._step_status[i] != STATUS_SUCCESS:
+                first_incomplete = i
+                break
+        else:
+            first_incomplete = len(self._steps)
+        if first_incomplete >= len(self._steps):
+            QMessageBox.information(self, "全部运行", "所有步骤已完成，无需再运行。")
+            return
+        self._run_steps_from(first_incomplete)
 
     def _run_steps_from(self, from_index: int) -> None:
         if from_index < 0 or from_index >= len(self._steps):
@@ -431,6 +447,7 @@ class MintPyFlowWidget(QWidget):
             self._work_dir, from_index, step_ids, self
         )
         self._worker.progress_updated.connect(self._on_worker_progress)
+        self._worker.step_completed.connect(self._on_worker_step_completed)
         self._worker.all_finished.connect(self._on_worker_all_finished)
         self._worker.start()
 
@@ -445,6 +462,12 @@ class MintPyFlowWidget(QWidget):
                 for i in range(self._running_from_index, cur_index):
                     self._update_step_status(i, STATUS_SUCCESS)
                 self._update_step_status(cur_index, STATUS_RUNNING)
+
+    def _on_worker_step_completed(self, step_index: int, success: bool) -> None:
+        """每步完成后更新表格状态并立即持久化到 mintpy_step_state.json。"""
+        if 0 <= step_index < len(self._step_status):
+            self._update_step_status(step_index, STATUS_SUCCESS if success else STATUS_FAIL)
+            self._save_step_state()
 
     def _on_worker_all_finished(self, success: bool, error_message: str) -> None:
         if self._worker:

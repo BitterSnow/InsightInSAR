@@ -4,6 +4,7 @@ Stack 流程配置对话框：填写 StackConfigRequest，执行「初始化流�
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -665,6 +666,7 @@ class StackFlowConfigDialog(QDialog):
             self.open_flow_btn.setEnabled(bool(self.work_dir_edit.text().strip()))
             err_msg = result.get("error_message", "未知错误")
             log_file = result.get("log_file")
+            logging.error("Stack 流程初始化失败: %s", err_msg)
             self.log_edit.appendPlainText("--- 错误详情 ---")
             self.log_edit.appendPlainText(err_msg)
             if log_file:

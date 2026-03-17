@@ -347,11 +347,12 @@ def run_mintpy_step(
             pct = min(5.0 + 90.0 * (1.0 - 1.0 / (1.0 + n * 0.02)), 95.0)
             progress_callback(pct, line.rstrip())
 
+    # 不设超时：网络反演等步骤可能运行数小时，由用户自行控制
     result = wsl_runner.run_wsl(
         cmd,
         env_script=env_script,
         extra_env=extra,
-        timeout=7200,
+        timeout=None,
         stream_callback=stream_cb,
     )
     if progress_callback:
@@ -372,8 +373,10 @@ def run_mintpy_steps(
     from_step_index: int,
     step_ids: Optional[List[str]] = None,
     progress_callback: Optional[Callable[[float, str], None]] = None,
+    step_completed_callback: Optional[Callable[[int, str, bool], None]] = None,
 ) -> Dict[str, Any]:
-    """Run steps from from_step_index to end. step_ids defaults to STEP_LIST_NOTEBOOK."""
+    """Run steps from from_step_index to end. step_ids defaults to STEP_LIST_NOTEBOOK.
+    step_completed_callback(step_index, step_id, success) is called after each step (success or fail)."""
     if step_ids is None:
         step_ids = list(STEP_LIST_NOTEBOOK)
     total = len(step_ids) - from_step_index
@@ -387,7 +390,10 @@ def run_mintpy_steps(
         if progress_callback:
             progress_callback(100.0 * cur / total, f"步骤 {cur + 1}/{total}: {STEP_NAMES_CN.get(step_id, step_id)}")
         out = run_mintpy_step(work_dir, step_id, progress_callback=progress_callback)
-        if not out.get("success"):
+        success = out.get("success", False)
+        if step_completed_callback:
+            step_completed_callback(i, step_id, success)
+        if not success:
             return out
     if progress_callback:
         progress_callback(100.0, "全部步骤完成")

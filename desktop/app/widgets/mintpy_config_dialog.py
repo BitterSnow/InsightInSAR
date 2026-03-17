@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 
 from PySide6.QtWidgets import (
@@ -65,6 +66,7 @@ class MintPyInitWorker(QThread):
             )
             self.finished_with_result.emit(result)
         except Exception as e:
+            logging.exception("MintPy 初始化异常: work_dir=%s", self._work_dir)
             self.progress_updated.emit(0.0, f"错误: {e}")
             self.finished_with_result.emit({"success": False, "error_message": str(e)})
 
@@ -215,6 +217,7 @@ class MintPyConfigDialog(QDialog):
                 QMessageBox.information(self, "初始化完成", "smallbaselineApp.cfg 已生成，可点击「打开流程界面」查看步骤并运行。")
         else:
             err = result.get("error_message", "未知错误")
+            logging.error("MintPy 初始化失败: %s", err)
             self.log_edit.appendPlainText("--- 错误 ---")
             self.log_edit.appendPlainText(err)
             QMessageBox.warning(self, "初始化失败", err)

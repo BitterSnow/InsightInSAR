@@ -75,9 +75,15 @@ os.environ["INSAR_PROJECT_ROOT"] = str(PROJECT_ROOT)
 if _is_frozen():
     os.environ.setdefault("INSAR_USE_WSL", "1")
     _load_wsl_config(PROJECT_ROOT)
+else:
+    # 源码运行（含 scripts/start_desktop_wsl.bat 启动）：确保 WSL 模式与配置生效，避免子进程未继承导致初始化报错
+    os.environ.setdefault("INSAR_USE_WSL", "1")
+    _load_wsl_config(PROJECT_ROOT)
 
 # 将运行期错误写入 logs/desktop.log。打包 exe 在客户机可能安装于不可写目录，故冻结运行时优先使用 %LOCALAPPDATA%\InSAR\logs，确保有错误记录。
 import logging
+import sys
+
 def _desktop_log_candidates():
     yield PROJECT_ROOT / "logs" / "desktop.log"
     if _is_frozen():
@@ -85,20 +91,30 @@ def _desktop_log_candidates():
         if local_app_data:
             yield Path(local_app_data) / "InSAR" / "logs" / "desktop.log"
 
+_root_logger = logging.getLogger()
+_root_logger.setLevel(logging.DEBUG)
 _log_file = None
+_file_handler = None
 for _log_file in _desktop_log_candidates():
     _log_dir = _log_file.parent
     try:
         _log_dir.mkdir(parents=True, exist_ok=True)
-        _file_handler = logging.FileHandler(_log_file, mode="a", encoding="utf-8")
+        _file_handler = logging.FileHandler(_log_file, mode="a", encoding="utf-8-sig")
         _file_handler.setLevel(logging.DEBUG)
         _file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
-        logging.getLogger().addHandler(_file_handler)
-        logging.getLogger().setLevel(logging.DEBUG)
-        logging.getLogger().info("Desktop log file: %s", _log_file)
+        _root_logger.addHandler(_file_handler)
+        _root_logger.info("Desktop log file: %s", _log_file)
         break
-    except (OSError, PermissionError):
+    except (OSError, PermissionError) as _e:
+        _file_handler = None
         continue
+if _file_handler is None:
+    # 所有候选路径均无法写入时，用 stderr 兜底（通过 bat 启动时 2>&1 仍会进入 logs/desktop.log）
+    _fallback = logging.StreamHandler(sys.stderr)
+    _fallback.setLevel(logging.WARNING)
+    _fallback.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    _root_logger.addHandler(_fallback)
+    _root_logger.warning("无法写入日志文件（已尝试 %s），错误将输出到 stderr。", _log_file or "logs/desktop.log")
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
