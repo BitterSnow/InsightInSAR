@@ -1,0 +1,8 @@
+# Backend API + Celery (worker with ISCE2 must be run in insar-ubuntu20 or image with ISCE2 built)
+fastapi>=0.109
+uvicorn[standard]>=0.27
+pydantic>=2
+celery[redis]>=5.3
+redis>=5
+geopandas>=0.14
+shapely>=2

@@ -68,3 +68,6 @@ __pycache__/
 
 # 打包产物 / 可执行发布目录
 /dist/
+
+# ISCE2 本地安装输出（构建产物，不推送；当前仅用 WSL 跑 InSAR）
+/$InstallDir/
