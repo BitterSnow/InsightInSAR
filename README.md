@@ -1,14 +1,14 @@
 ## Insight InSAR
 
-Windows 原生的 InSAR 处理系统，包含本地桌面端（PySide6）、后端服务（FastAPI + Celery + Redis）以及与 ISCE2 / MintPy 集成的 InSAR 处理流水线，面向工程/生产环境的一站式形变监测工具。
+Windows 桌面 + WSL InSAR 处理的一站式形变监测系统：本地桌面端（PySide6）与后端（FastAPI + Celery + Redis）运行在 Windows，**所有 InSAR 计算（ISCE2 / MintPy）仅在 WSL 内执行**，无需在 Windows 上安装或构建 ISCE2。
 
 ### 核心特性
 
-- **本地桌面应用**：基于 PySide6 的 B/S 风格桌面 UI，支持任务管理、ROI 选择、产品浏览和参数配置。
-- **后端任务调度**：FastAPI 提供 REST API，Celery 负责异步调度长时间 InSAR 处理任务（与 Redis 协作）。
-- **InSAR 处理流水线**：通过统一的 Python Facade 调用本机 ISCE2（CMake 构建的 .pyd）和 MintPy，完成从 SLC 导入到时序分析的流程。
-- **工程化部署**：面向 Windows 单机部署，提供打包与运行脚本，可脱离 Docker 直接安装运行。
-- **日志与监控**：任务进度、运行日志持久化到本地文件，桌面端可查看运行状态与错误信息。
+- **本地桌面应用**：基于 PySide6 的桌面 UI，支持任务管理、ROI 选择、产品浏览和参数配置。
+- **后端任务调度**：FastAPI 提供 REST API，Celery 异步调度长时间任务，与 Redis 协作。
+- **InSAR 仅走 WSL**：S1 导入、topsStack、MintPy 等全部通过 `wsl` 命令在 WSL 中调用 ISCE2 / MintPy，桌面与后端只做参数与进度桥接。
+- **工程化部署**：Windows 单机部署，提供「InSAR WSL 部署向导」导入 WSL 镜像与配置，打包后可脱离 Docker 运行。
+- **日志与监控**：任务进度与运行日志落盘，桌面端可查看状态与错误信息。
 
 ### 技术栈总览
 
@@ -19,14 +19,13 @@ Windows 原生的 InSAR 处理系统，包含本地桌面端（PySide6）、后�
 
 - **后端服务**
   - FastAPI：任务提交、状态查询、结果获取等 REST 接口
-  - Celery：异步任务队列（长时间 ISCE2 / MintPy 处理）
-  - Redis：Celery broker / backend（可根据部署环境调整）
-  -（可选）PostgreSQL：项目与任务元数据持久化
+  - Celery：异步任务队列（将 InSAR 步骤下发至 WSL 执行）
+  - Redis：Celery broker / backend
 
-- **InSAR 引擎**
-  - ISCE2：通过 Python API 使用 CMake 构建的 .pyd 扩展（不依赖 Docker）
-  - MintPy：时序形变分析与可视化产物生成
-  - 统一 Facade：将复杂 InSAR 步骤包装成稳定的 Python 调用接口（如 `run_s1_slc_extract` 等）
+- **InSAR 引擎（仅 WSL）**
+  - ISCE2：在 WSL 内通过 Python API 使用（Ubuntu 等环境下安装/构建）
+  - MintPy：在 WSL 内完成时序形变分析与产物生成
+  - 桥接方式：后端通过 `backend.services.wsl_runner` 调用 `wsl`，在 WSL 中执行 `backend.scripts.run_*_wsl` 等入口
 
 ### 目录结构（简要）
 
@@ -45,48 +44,41 @@ insar-system/
 └── README.md             # 当前文件
 ```
 
-更多详细说明可参考：`docs/installation_and_deployment.md` 以及阶段性 Windows 安装文档（如 `docs/windows-phase*.md`）。
+更多说明见：`docs/installation_and_deployment.md`、`docs/wsl_ubuntu24_isce2_setup.md`。
 
 ### 快速开始（开发环境）
 
-1. **准备环境**
-   - Windows 10/11
-   - Python 3.10+（推荐使用 Miniconda/Conda 管理环境）
-   - ISCE2 + MintPy 已按 `docs/windows-phase*.md` 配置完成，并能在当前 Python 环境中导入。
+1. **环境要求**
+   - Windows 10/11，已启用 WSL 2
+   - 本机 Python 3.10+（用于运行桌面与后端，**不需**在 Windows 上安装 ISCE2）
+   - WSL 内已按 `docs/wsl_ubuntu24_isce2_setup.md` 配置好 ISCE2 与 MintPy，并设置 `INSAR_USE_WSL=1`、`INSAR_WSL_PROJECT_ROOT` 等（可通过「InSAR WSL 部署向导」或 `scripts/start_desktop_wsl.bat` 写入配置）
 
 2. **创建与激活虚拟环境**
 
    ```bash
-   # 建议在 Anaconda Prompt / PowerShell 中执行（示例）
    conda create -n insight-insar python=3.10
    conda activate insight-insar
-
-   # 进入项目目录
    cd d:\coding\insar-system
    ```
 
 3. **安装依赖**
 
    ```bash
-   # 如果项目中提供 requirements / 环境文件，请使用相应命令
    pip install -r packaging/requirements.txt
    ```
 
-4. **启动后端服务与桌面端**
+4. **启动方式（WSL 模式）**
 
-   具体启动命令请参考 `docs/installation_and_deployment.md`：
-   - 启动 FastAPI（开发模式）：`uvicorn backend.main:app --reload`
-   - 启动 Celery worker：`celery -A backend.celery_app worker -l info`
-   - 启动桌面应用：运行 `python -m desktop` 或对应启动脚本（以实际实现为准）。
+   - 推荐：使用 `scripts/start_desktop_wsl.bat` 启动（会加载 WSL 配置并启动桌面），或先设置 `INSAR_USE_WSL=1` 与 `INSAR_WSL_PROJECT_ROOT` 后启动后端与桌面。
+   - 启动 FastAPI：`uvicorn backend.app.main:app --reload`
+   - 启动 Celery worker：`celery -A backend.app.celery_app worker -l info`
+   - 启动桌面：`python -m desktop`
 
 ### 架构概览
 
-- 桌面端通过 HTTP（及可选的 WebSocket）与本地 FastAPI 通信，完成：
-  - InSAR 任务参数配置与提交
-  - 任务状态轮询 / 进度订阅
-  - 结果文件路径与元数据获取
-- FastAPI 将长时间任务下发至 Celery，由 Celery 在同一台机器上调用 ISCE2 / MintPy Python API 完成计算，并将中间与最终结果写入本地磁盘。
-- 所有路径与数据目录均围绕本机单机部署进行设计，适配 Windows 文件系统路径与权限。
+- 桌面端通过 HTTP 与本地 FastAPI 通信：提交任务、轮询状态、获取结果路径与元数据。
+- FastAPI 将 InSAR 任务交给 Celery；Celery 通过 **wsl_runner** 在 WSL 内执行 `run_s1_extract_wsl`、`run_stack_wsl`、`run_mintpy_wsl` 等，**不在 Windows 上直接调用 ISCE2/MintPy**。
+- 数据与工作目录可为 Windows 路径；后端在调用 WSL 前将所需路径转换为 WSL 路径，结果仍可从 Windows 访问。
 
 ### License
 
