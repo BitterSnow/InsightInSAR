@@ -71,3 +71,13 @@ __pycache__/
 
 # ISCE2 本地安装输出（构建产物，不推送；当前仅用 WSL 跑 InSAR）
 /$InstallDir/
+
+# 本地/临时文档与配置（不推送）
+DESIGN_SYSTEM.md
+FRONTEND_MIGRATION.md
+UI_UX_PRO_MAX_TEST_RESULTS.md
+PROJECT_SUMMARY.md
+desktop_current_project.txt
+desktop_projects.json
+check_line.py
+main
