@@ -31,7 +31,7 @@ Windows 桌面 + WSL InSAR 处理的一站式形变监测系统：本地桌面�
 ### 目录结构（简要）
 
 ```
-insar-system/
+InsightInSAR/
 ├── desktop/              # PySide6 桌面应用源码
 ├── config/               # 后端与处理流水线的配置文件
 ├── scripts/              # 开发 / 部署 / 运维脚本
@@ -40,7 +40,6 @@ insar-system/
 ├── dist/                 # 打包产物（如安装包、可执行文件）
 ├── docs/                 # 文档（安装、架构、阶段规划等）
 ├── logs/                 # 运行日志（本地调试与生产排障）
-├── .cursor/              # Cursor AI 配置（本地规划与技能，不推到 GitHub）
 ├── .venv/                # Python 虚拟环境（本地）
 └── README.md             # 当前文件
 ```
@@ -59,7 +58,8 @@ insar-system/
    ```bash
    conda create -n insight-insar python=3.10
    conda activate insight-insar
-   cd d:\coding\insar-system
+   git clone https://github.com/BitterSnow/InsightInSAR.git
+   cd InsightInSAR
    ```
 
 3. **安装依赖**
