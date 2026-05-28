@@ -85,3 +85,7 @@ main
 # runtime logs / temporary workspace
 /logs/*.log
 /tmp/
+
+# local ssh key copies (safety)
+/github
+/github.pub

@@ -1,10 +1,11 @@
 ## Insight InSAR
 
-Windows 桌面 + WSL InSAR 处理的一站式形变监测系统：本地桌面端（PySide6）与后端（FastAPI + Celery + Redis）运行在 Windows，**所有 InSAR 计算（ISCE2 / MintPy）仅在 WSL 内执行**，无需在 Windows 上安装或构建 ISCE2。
+Windows 桌面 + WSL InSAR 处理的一站式形变监测系统：本地桌面端（PySide6）与后端（FastAPI + Celery + Redis）运行在 Windows，**无网页前端依赖**；所有 InSAR 计算（ISCE2 / MintPy）仅在 WSL 内执行，无需在 Windows 上安装或构建 ISCE2。
 
 ### 核心特性
 
 - **本地桌面应用**：基于 PySide6 的桌面 UI，支持任务管理、ROI 选择、产品浏览和参数配置。
+- **非 Web 前端架构**：交互入口是 Desktop 客户端（非浏览器页面），后端仅作为本机 API 与异步调度服务。
 - **后端任务调度**：FastAPI 提供 REST API，Celery 异步调度长时间任务，与 Redis 协作。
 - **InSAR 仅走 WSL**：S1 导入、topsStack、MintPy 等全部通过 `wsl` 命令在 WSL 中调用 ISCE2 / MintPy，桌面与后端只做参数与进度桥接。
 - **工程化部署**：Windows 单机部署，提供「InSAR WSL 部署向导」导入 WSL 镜像与配置，打包后可脱离 Docker 运行。
@@ -18,7 +19,7 @@ Windows 桌面 + WSL InSAR 处理的一站式形变监测系统：本地桌面�
   - 内嵌 Matplotlib / 图表控件，用于时序曲线与剖面显示
 
 - **后端服务**
-  - FastAPI：任务提交、状态查询、结果获取等 REST 接口
+  - FastAPI：供 Desktop 调用的本机 REST 接口（任务提交、状态查询、结果获取）
   - Celery：异步任务队列（将 InSAR 步骤下发至 WSL 执行）
   - Redis：Celery broker / backend
 
