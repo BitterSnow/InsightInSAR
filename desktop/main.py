@@ -72,6 +72,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 os.environ["INSAR_PROJECT_ROOT"] = str(PROJECT_ROOT)
+try:
+    from backend.services.wsl_runner import bootstrap_isce2_main_env, load_wsl_config_env
+
+    load_wsl_config_env(str(PROJECT_ROOT))
+    bootstrap_isce2_main_env()
+except Exception:
+    pass
 if _is_frozen():
     os.environ.setdefault("INSAR_USE_WSL", "1")
     _load_wsl_config(PROJECT_ROOT)

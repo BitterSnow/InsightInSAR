@@ -148,19 +148,107 @@ def stack_init(
         work_dir = wsl_runner.windows_path_to_wsl(raw)
     else:
         work_dir = raw or request.work_dir
-    slc_dir = wsl_runner.windows_path_to_wsl(os.path.abspath(request.slc_dir))
-    dem_path = wsl_runner.windows_path_to_wsl(os.path.abspath(request.dem_path))
+    if progress_callback:
+        progress_callback(0.0, "准备 stackSentinel 参数…")
+
+    wsl_runner.ensure_drives_for_paths(
+        request.slc_dir,
+        request.orbit_dir,
+        request.aux_dir,
+        request.dem_path,
+        request.work_dir,
+    )
+    slc_win = os.path.abspath(request.slc_dir)
+    slc_dir, slc_err = wsl_runner.resolve_windows_path_to_wsl(slc_win)
+    if slc_err or not slc_dir:
+        return {
+            "success": False,
+            "error_message": slc_err or f"SLC 目录在 WSL 中不可访问：{slc_win}",
+            "pipeline": None,
+            "log_file": None,
+        }
+    for label, path in (
+        ("轨道", request.orbit_dir),
+        ("Aux", request.aux_dir),
+    ):
+        wsl_p, err = wsl_runner.resolve_windows_path_to_wsl(os.path.abspath(path))
+        if err or not wsl_p:
+            return {
+                "success": False,
+                "error_message": err or f"{label} 路径在 WSL 中不可访问：{path}",
+                "pipeline": None,
+                "log_file": None,
+            }
+    dem_win = os.path.abspath(request.dem_path)
+    if not os.path.isfile(dem_win):
+        return {
+            "success": False,
+            "error_message": f"DEM 文件不存在：{dem_win}",
+            "pipeline": None,
+            "log_file": None,
+        }
+    dem_path = wsl_runner.windows_path_to_wsl(dem_win)
     orbit_dir = wsl_runner.windows_path_to_wsl(os.path.abspath(request.orbit_dir))
     aux_dir = wsl_runner.windows_path_to_wsl(os.path.abspath(request.aux_dir))
     swaths_to_use = request.swaths
+    orbit_preflight_result: Optional[Dict[str, Any]] = None
 
-    if progress_callback:
-        progress_callback(0.0, "准备 stackSentinel 参数…")
+    # 预检并补全精密星历（ASF POEORB）：解析各 SAFE 成像时刻，缺失则自动下载到 orbit_dir
+    try:
+        from backend.services.sentinel_orbit_asf import (
+            ensure_precise_orbits_for_stack,
+            format_orbit_preflight_for_ui,
+        )
+
+        def _orbit_progress(p: float, msg: str) -> None:
+            if progress_callback:
+                progress_callback(min(4.0, float(p)), msg)
+
+        pre = ensure_precise_orbits_for_stack(
+            os.path.abspath(request.slc_dir),
+            os.path.abspath(request.orbit_dir),
+            progress_callback=_orbit_progress if progress_callback else None,
+        )
+        orbit_preflight_result = pre
+        if not pre.get("ok"):
+            detail = format_orbit_preflight_for_ui(pre)
+            err = (pre.get("message") or "精密星历预检失败") + "\n\n" + detail
+            return {
+                "success": False,
+                "error_message": err,
+                "pipeline": None,
+                "log_file": None,
+                "orbit_preflight": pre,
+            }
+        if progress_callback and pre.get("downloaded"):
+            dl = pre["downloaded"]
+            tail = ", ".join(dl[:8]) + (" …" if len(dl) > 8 else "")
+            progress_callback(4.5, f"已从 ASF 下载 {len(dl)} 个精密星历: {tail}")
+    except Exception as e:
+        return {
+            "success": False,
+            "error_message": f"轨道预检异常: {e}",
+            "pipeline": None,
+            "log_file": None,
+        }
 
     # 在 WSL 内执行 backend.scripts.run_stack_wsl init，参数通过 INSAR_STACK_INIT_JSON 传入
     project_root = wsl_runner.get_wsl_project_root()
     if not project_root:
         return {"success": False, "error_message": "WSL 模式下请设置 INSAR_WSL_PROJECT_ROOT（WSL 侧项目路径）", "pipeline": None, "log_file": None}
+    isce_env, isce_env_err = wsl_runner.build_wsl_isce2_extra_env()
+    if isce_env_err or not isce_env:
+        return {
+            "success": False,
+            "error_message": isce_env_err or "未找到 WSL conda ISCE2 环境。",
+            "pipeline": None,
+            "log_file": None,
+        }
+    extra_env: Dict[str, str] = {
+        "INSAR_STACK_INIT_JSON": "",
+        "INSAR_PROJECT_ROOT": project_root,
+        **isce_env,
+    }
     init_json = json.dumps({
         "work_dir": work_dir,
         "slc_dir": slc_dir,
@@ -184,13 +272,11 @@ def stack_init(
     env_script = wsl_runner.get_wsl_env_script()
     if progress_callback:
         progress_callback(5.0, "在 WSL 中运行 stackSentinel…")
+    extra_env["INSAR_STACK_INIT_JSON"] = init_json
     result = wsl_runner.run_wsl(
         cmd,
         env_script=env_script,
-        extra_env={
-            "INSAR_STACK_INIT_JSON": init_json,
-            "INSAR_PROJECT_ROOT": project_root,
-        },
+        extra_env=extra_env,
         timeout=3600,
     )
     log_path_win = os.path.join(work_dir_win, "stack_init.log") if work_dir_win else None
@@ -224,6 +310,12 @@ def stack_init(
         err_msg = result.get("error_message") or stderr_str or "WSL 执行失败"
         if err_hint:
             err_msg = err_msg.rstrip() + err_hint
+        if "fetchOrbit" in err_msg:
+            err_msg += (
+                "\n\n说明：topsStack 需将 $CONDA_PREFIX/share/isce2 加入 PYTHONPATH（import topsStack），"
+                "并将 topsStack 目录加入 PATH（fetchOrbit.py）。请重启桌面后重试。"
+                " 若已自动补全星历仍失败，请检查 WSL 内 INSAR_WSL_PROJECT_ROOT 是否指向包含 lib/isce2-main 的安装树。"
+            )
         return {
             "success": False,
             "error_message": err_msg,
@@ -245,7 +337,15 @@ def stack_init(
         return {"success": False, "error_message": "WSL 未返回 pipeline", "pipeline": None, "log_file": log_path_return}
     if progress_callback:
         progress_callback(100.0, "流程初始化完成")
-    return {"success": True, "pipeline": pipeline, "work_dir": work_dir_win or work_dir, "log_file": log_path_return}
+    out: Dict[str, Any] = {
+        "success": True,
+        "pipeline": pipeline,
+        "work_dir": work_dir_win or work_dir,
+        "log_file": log_path_return,
+    }
+    if orbit_preflight_result:
+        out["orbit_preflight"] = orbit_preflight_result
+    return out
 
 
 def parse_run_files_to_pipeline(work_dir: str) -> Optional[Dict[str, Any]]:
@@ -356,15 +456,26 @@ def run_stack_step(
     work_dir_win = work_dir
     if work_dir and ("\\" in work_dir or (len(work_dir) >= 2 and work_dir[1] == ":")):
         work_dir = wsl_runner.windows_path_to_wsl(work_dir)
+    ok_src, src_err = wsl_runner.verify_stack_safe_sources(work_dir_win or work_dir)
+    if not ok_src:
+        return {
+            "success": False,
+            "error_message": src_err or "Stack 源 SLC zip 在 WSL 中不可访问。",
+            "step_id": step_id,
+        }
     project_root = wsl_runner.get_wsl_project_root()
     if not project_root:
         return {"success": False, "error_message": "WSL 模式下请设置 INSAR_WSL_PROJECT_ROOT", "step_id": step_id}
     cmd = f"cd '{project_root}' && PYTHONPATH=\".:${{PYTHONPATH:-}}\" python3 -m backend.scripts.run_stack_wsl step --work_dir='{work_dir}' --step_id='{step_id}'"
     env_script = wsl_runner.get_wsl_env_script()
+    isce_env, isce_env_err = wsl_runner.build_wsl_isce2_extra_env()
+    if isce_env_err:
+        return {"success": False, "error_message": isce_env_err, "step_id": step_id}
     extra = {
         "INSAR_STACK_STEP_WORK_DIR": work_dir,
         "INSAR_STACK_STEP_ID": step_id,
         "INSAR_PROJECT_ROOT": project_root,
+        **isce_env,
     }
     out_line_count: List[int] = [0]
 

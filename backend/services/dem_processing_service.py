@@ -4,6 +4,7 @@ DEM 制作：在 WSL 内调用 ISCE2 applications/dem.py 进行 SRTM 拼接。
 """
 from __future__ import annotations
 
+import logging
 import math
 import os
 import shutil
@@ -13,6 +14,8 @@ import urllib.request
 from typing import Callable, List, Optional, Tuple
 
 from backend.services import wsl_runner
+
+logger = logging.getLogger(__name__)
 
 ESA_SRTMGL1_URL = "https://step.esa.int/auxdata/dem/SRTMGL1"
 
@@ -143,6 +146,7 @@ def run_dem_stitch_wsl(
             stream_callback=stream_callback,
         )
     except Exception as e:
+        logger.exception("补充 SRTM 瓦片失败: %s", e)
         return {
             "success": False,
             "returncode": -1,
@@ -162,21 +166,49 @@ def run_dem_stitch_wsl(
             "error_message": "DEM 制作需在 WSL 模式下运行（INSAR_USE_WSL=1）。请使用 scripts/start_desktop_wsl.bat 启动。",
             "output_path": None,
         }
-    project_root = wsl_runner.get_wsl_project_root()
-    if not project_root:
+    isce_env, isce_env_err = wsl_runner.build_wsl_isce2_extra_env()
+    if isce_env_err or not isce_env:
         return {
             "success": False,
             "returncode": -1,
             "stdout": "",
             "stderr": "",
-            "error_message": "未设置 INSAR_WSL_PROJECT_ROOT，无法定位 dem.py。请用 start_desktop_wsl.bat 启动。",
+            "error_message": isce_env_err or "无法定位 WSL conda ISCE2 环境。",
             "output_path": None,
         }
+    isce2_main = isce_env.get("INSAR_WSL_ISCE2_MAIN") or ""
+    if not isce2_main:
+        return {
+            "success": False,
+            "returncode": -1,
+            "stdout": "",
+            "stderr": "",
+            "error_message": "未找到 WSL ISCE2 包路径（INSAR_WSL_ISCE2_MAIN）。",
+            "output_path": None,
+        }
+    # 清理路径中的空字节和非法字符，防止 embedded null character 错误
+    dem_raw_dir_clean = dem_raw_dir.replace("\x00", "").strip()
+    output_dir_clean = output_dir.replace("\x00", "").strip()
     env_script = wsl_runner.get_wsl_env_script()
-    out_dir_wsl = wsl_runner.windows_path_to_wsl(dem_raw_dir.replace("\\", "/").strip())
-    safe_root = project_root.replace("'", "'\"'\"'")
+    out_dir_wsl, path_err = wsl_runner.resolve_windows_path_to_wsl(dem_raw_dir_clean)
+    if path_err or not out_dir_wsl:
+        return {
+            "success": False,
+            "returncode": -1,
+            "stdout": "",
+            "stderr": "",
+            "error_message": path_err or "DEM 原始数据目录在 WSL 中不可访问。",
+            "output_path": None,
+        }
+    safe_isce2 = isce2_main.replace("'", "'\"'\"'")
     safe_dir = out_dir_wsl.replace("'", "'\"'\"'")
-    isce2_main = f"{safe_root}/lib/isce2-main"
+    if stream_callback:
+        stream_callback(f"WSL 数据目录: {out_dir_wsl}\n")
+    logger.info(
+        "DEM stitch: bbox=(%s,%s,%s,%s), raw_dir=%s, output_dir=%s, wsl_out_dir=%s",
+        bbox_south, bbox_north, bbox_west, bbox_east,
+        dem_raw_dir_clean, output_dir_clean, out_dir_wsl,
+    )
     # 整条 python 命令必须是一个 shell 词，不能再用 && 把 -a/-b 等拆成单独命令
     py_args = [
         "-a stitch",
@@ -191,53 +223,66 @@ def run_dem_stitch_wsl(
     if correct_egm96:
         py_args.append("-c")
     py_cmd = " ".join(["PYTHONPATH='.:${PYTHONPATH:-}' python applications/dem.py"] + py_args)
-    cmd = f"cd '{isce2_main}' && {py_cmd}"
+    cmd = f"cd '{safe_isce2}' && {py_cmd}"
+    extra_env: dict[str, str] = dict(isce_env)
+    distro = wsl_runner.get_wsl_distro() or "Ubuntu"
+    logger.info(
+        "DEM stitch 在 WSL 内执行: distro=%s, isce2_root=%s, data_dir=%s",
+        distro,
+        isce2_main,
+        out_dir_wsl,
+    )
+    if stream_callback:
+        stream_callback(f"WSL 发行版: {distro}\n")
     result = wsl_runner.run_wsl(
         cmd,
         env_script=env_script,
+        extra_env=extra_env or None,
         timeout=timeout,
         stream_callback=stream_callback,
     )
     if not result.get("success"):
         result["output_path"] = None
+        logger.error("DEM stitch WSL 命令失败: %s", result.get("error_message"))
         return result
 
     # dem.py 输出在 dem_raw_dir；若 output_dir 与 dem_raw_dir 不同则复制到 output_dir，否则直接使用原路径
-    raw_abs = os.path.abspath(os.path.normpath(dem_raw_dir))
-    out_abs = os.path.abspath(os.path.normpath(output_dir))
+    raw_abs = os.path.abspath(os.path.normpath(dem_raw_dir_clean))
+    out_abs = os.path.abspath(os.path.normpath(output_dir_clean))
     same_dir = raw_abs == out_abs
 
     def copy_if_needed(src: str, dst: str) -> None:
         if os.path.abspath(os.path.normpath(src)) != os.path.abspath(os.path.normpath(dst)):
             shutil.copy2(src, dst)
 
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(output_dir_clean, exist_ok=True)
     main_out_path = None
     if output_name:
         base = output_name
         for suffix in (".wgs84", ".wgs84.xml", ".dem", ".dem.xml"):
-            src = os.path.join(dem_raw_dir, base + suffix)
+            src = os.path.join(dem_raw_dir_clean, base + suffix)
             if os.path.isfile(src):
-                dst = os.path.join(output_dir, os.path.basename(src))
+                dst = os.path.join(output_dir_clean, os.path.basename(src))
                 copy_if_needed(src, dst)
                 if main_out_path is None and suffix in (".wgs84", ".dem"):
                     main_out_path = dst
     else:
         # 未指定 -o 时 dem.py 用 defaultName(bbox)，复制最近生成的非常规瓦片文件
         cutoff = time.time() - 120
-        for name in os.listdir(dem_raw_dir):
+        for name in os.listdir(dem_raw_dir_clean):
             if name.endswith(".hgt") or name.endswith(".zip"):
                 continue
-            path = os.path.join(dem_raw_dir, name)
+            path = os.path.join(dem_raw_dir_clean, name)
             if not os.path.isfile(path) or os.path.getmtime(path) < cutoff:
                 continue
-            dst = os.path.join(output_dir, name)
+            dst = os.path.join(output_dir_clean, name)
             copy_if_needed(path, dst)
             if main_out_path is None and not name.endswith(".xml"):
                 main_out_path = dst
         if main_out_path is None:
-            for name in sorted(os.listdir(output_dir)):
-                main_out_path = os.path.join(output_dir, name)
+            for name in sorted(os.listdir(output_dir_clean)):
+                main_out_path = os.path.join(output_dir_clean, name)
                 break
+    logger.info("DEM stitch 完成: output_path=%s", main_out_path)
     result["output_path"] = main_out_path
     return result

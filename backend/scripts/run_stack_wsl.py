@@ -8,6 +8,7 @@ WSL 内执行的 Stack 入口：stack_init（stackSentinel + 解析 pipeline 并
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import subprocess
@@ -25,8 +26,51 @@ def _project_root() -> str:
     return os.path.abspath(os.path.join(this_dir, "..", "..", ".."))
 
 
+def _apply_tops_stack_runtime_env(env: dict, tops_stack_dir: str) -> None:
+    """PATH 指向 topsStack 脚本目录；PYTHONPATH 指向其父目录以便 import topsStack。"""
+    tops_stack_dir = tops_stack_dir.rstrip("/")
+    stack_pp = (os.environ.get("INSAR_ISCE2_STACK_PYTHONPATH") or "").strip()
+    if not stack_pp:
+        try:
+            from backend.services.wsl_runner import get_tops_stack_pythonpath
+
+            stack_pp = get_tops_stack_pythonpath(tops_stack_dir)
+        except Exception:
+            base = tops_stack_dir
+            if os.path.basename(base) == "topsStack":
+                stack_pp = os.path.dirname(base)
+            else:
+                stack_pp = base
+    if stack_pp:
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = stack_pp + (os.pathsep + existing if existing else "")
+    path_sep = os.pathsep
+    env["PATH"] = tops_stack_dir + path_sep + env.get("PATH", "")
+
+
 def _tops_stack(root: str) -> str:
-    return os.path.join(root, "lib", "isce2-main", "contrib", "stack", "topsStack")
+    """
+    topsStack 目录（含 stackSentinel.py、fetchOrbit.py）。
+    优先 INSAR_ISCE2_TOPS_STACK / WSL conda $CONDA_PREFIX/share/isce2/topsStack，不用 /mnt 下 Windows 源码。
+    """
+    try:
+        from backend.services.wsl_runner import get_tops_stack_dir_for_root
+
+        found = get_tops_stack_dir_for_root(root)
+        if found:
+            return found.rstrip("/")
+    except Exception:
+        pass
+    for key in ("INSAR_ISCE2_TOPS_STACK", "INSAR_WSL_ISCE2_TOPS_STACK"):
+        alt = (os.environ.get(key) or "").strip().rstrip("/")
+        if alt and os.path.isfile(os.path.join(alt, "stackSentinel.py")):
+            return alt
+    prefix = (os.environ.get("CONDA_PREFIX") or "").strip().rstrip("/")
+    if prefix:
+        conda_tops = os.path.join(prefix, "share", "isce2", "topsStack")
+        if os.path.isfile(os.path.join(conda_tops, "stackSentinel.py")):
+            return conda_tops
+    return ""
 
 
 # 与 stack_processing_service 同步；WSL 内不导入该模块以免依赖 pydantic
@@ -111,11 +155,29 @@ def cmd_init(args: argparse.Namespace) -> int:
             print("INSAR_STACK_INIT_JSON not set and required --work_dir, --slc_dir, --orbit_dir, --dem_path, --aux_dir missing", file=sys.stderr)
             return 1
     root = _project_root()
-    stack_sentinel = os.path.join(_tops_stack(root), "stackSentinel.py")
+    tops_stack_dir = _tops_stack(root)
+    if not tops_stack_dir:
+        print(
+            json.dumps(
+                {
+                    "success": False,
+                    "error": (
+                        "未找到 topsStack（stackSentinel.py）。"
+                        "请在 WSL Ubuntu conda 环境 isce2 中安装 ISCE2，"
+                        "或设置 INSAR_ISCE2_TOPS_STACK=$CONDA_PREFIX/share/isce2/topsStack。"
+                    ),
+                }
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    stack_sentinel = os.path.join(tops_stack_dir, "stackSentinel.py")
     if not os.path.isfile(stack_sentinel):
         print(json.dumps({"success": False, "error": f"stackSentinel.py not found: {stack_sentinel}"}), file=sys.stderr)
         return 1
     os.makedirs(work_dir, exist_ok=True)
+    env = os.environ.copy()
+    _apply_tops_stack_runtime_env(env, tops_stack_dir)
     argv = [
         sys.executable,
         stack_sentinel,
@@ -144,7 +206,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     if args.stop_date:
         argv.extend(["--stop_date", args.stop_date])
     try:
-        r = subprocess.run(argv, cwd=work_dir, timeout=3600, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        r = subprocess.run(argv, cwd=work_dir, env=env, timeout=3600, capture_output=True, text=True, encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
         print(json.dumps({"success": False, "error": "stackSentinel 运行超时"}), file=sys.stderr)
         return 1
@@ -162,6 +224,113 @@ def cmd_init(args: argparse.Namespace) -> int:
         json.dump(pipeline, f, ensure_ascii=False, indent=2)
     print(json.dumps({"success": True, "pipeline": pipeline}))
     return 0
+
+
+def _resolve_topsstack_script(script_token: str, tops_stack_dir: str, work_dir: str) -> str:
+    """run_files 中的 extractCommonValidRegion.py 等脚本名 -> topsStack 目录下绝对路径。"""
+    name = os.path.basename(script_token)
+    candidate = os.path.join(tops_stack_dir, name)
+    if os.path.isfile(candidate):
+        return candidate
+    alt = os.path.join(work_dir, name)
+    if os.path.isfile(alt):
+        return alt
+    return candidate
+
+
+def _argv_from_run_line(line: str, work_dir: str, tops_stack_dir: str, wrapper_py: str) -> list | None:
+    """
+    将 run_files 中的一行命令转为 argv。
+    支持 SentinelWrapper.py -c <config> 与 topsStack 直调脚本（如 extractCommonValidRegion.py）。
+    """
+    line = line.strip()
+    if not line or line.startswith("#"):
+        return None
+    parts = line.split()
+    if "SentinelWrapper" in line:
+        config_path = None
+        for j, p in enumerate(parts):
+            if p == "-c" and j + 1 < len(parts):
+                config_path = parts[j + 1]
+                break
+        if not config_path:
+            return None
+        if not os.path.isabs(config_path):
+            config_path = os.path.join(work_dir, config_path)
+        return [sys.executable, wrapper_py, "-c", config_path]
+    if parts[0].endswith(".py"):
+        script_path = _resolve_topsstack_script(parts[0], tops_stack_dir, work_dir)
+        return [sys.executable, script_path, *parts[1:]]
+    return None
+
+
+def _run_subprocess_argv(
+    argv: list,
+    *,
+    cwd: str,
+    env: dict,
+    step_log_path: str,
+    step_id: str,
+    timeout_sec: int | None,
+) -> int:
+    """执行单条子命令；返回进程退出码。"""
+    start_iso = datetime.utcnow().isoformat() + "Z"
+    proc = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    out_lines: list[str] = []
+
+    def read_and_forward() -> None:
+        if proc.stdout:
+            for out_line in iter(proc.stdout.readline, ""):
+                out_lines.append(out_line)
+                sys.stdout.write(out_line)
+                sys.stdout.flush()
+
+    reader = threading.Thread(target=read_and_forward, daemon=True)
+    reader.start()
+    try:
+        if timeout_sec is not None:
+            proc.wait(timeout=timeout_sec)
+        else:
+            proc.wait()
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        reader.join(timeout=2)
+        stdout_str = "".join(out_lines)
+        _append_step_log(
+            step_log_path,
+            step_id,
+            argv,
+            -1,
+            stdout_str,
+            "\nTimeoutExpired",
+            start_iso,
+            datetime.utcnow().isoformat() + "Z",
+        )
+        return -1
+    reader.join(timeout=5)
+    stdout_str = "".join(out_lines)
+    returncode = proc.returncode if proc.returncode is not None else -1
+    _append_step_log(
+        step_log_path,
+        step_id,
+        argv,
+        returncode,
+        stdout_str,
+        "",
+        start_iso,
+        datetime.utcnow().isoformat() + "Z",
+    )
+    return returncode
 
 
 def _append_step_log(
@@ -226,71 +395,55 @@ def cmd_step(args: argparse.Namespace) -> int:
             timeout_sec = max(60, int(t))
     except ValueError:
         pass
-    for line in step.get("commands") or []:
-        line = line.strip()
-        if not line or "SentinelWrapper" not in line:
+    tops_stack_dir = _tops_stack(root)
+    step_env = os.environ.copy()
+    _apply_tops_stack_runtime_env(step_env, tops_stack_dir)
+    raw_commands = [ln.strip() for ln in (step.get("commands") or []) if ln.strip()]
+    ran_count = 0
+    for line in raw_commands:
+        argv = _argv_from_run_line(line, work_dir, tops_stack_dir, wrapper_py)
+        if not argv:
+            print(f"跳过无法解析的命令行: {line}", file=sys.stderr)
             continue
-        parts = line.split()
-        config_path = None
-        for j, p in enumerate(parts):
-            if p == "-c" and j + 1 < len(parts):
-                config_path = parts[j + 1]
-                break
-        if not config_path:
-            continue
-        if not os.path.isabs(config_path):
-            config_path = os.path.join(work_dir, config_path)
-        argv = [sys.executable, wrapper_py, "-c", config_path]
-        start_iso = datetime.utcnow().isoformat() + "Z"
-        # 使用 Popen + 实时转发 stdout，否则 capture_output=True 会导致 Windows 侧收不到任何行，进度条与控制台不刷新
-        proc = subprocess.Popen(
+        ran_count += 1
+        rc = _run_subprocess_argv(
             argv,
             cwd=work_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            env=step_env,
+            step_log_path=step_log_path,
+            step_id=step_id,
+            timeout_sec=timeout_sec,
         )
-        out_lines = []
-
-        def read_and_forward():
-            if proc.stdout:
-                for line in iter(proc.stdout.readline, ""):
-                    out_lines.append(line)
-                    sys.stdout.write(line)
-                    sys.stdout.flush()
-
-        reader = threading.Thread(target=read_and_forward, daemon=True)
-        reader.start()
-        try:
-            if timeout_sec is not None:
-                proc.wait(timeout=timeout_sec)
-            else:
-                proc.wait()
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-            reader.join(timeout=2)
-            stdout_str = "".join(out_lines)
-            _append_step_log(
-                step_log_path, step_id, argv, -1,
-                stdout_str, "\nTimeoutExpired (inner SentinelWrapper)",
-                start_iso, datetime.utcnow().isoformat() + "Z",
+        if rc != 0:
+            os._exit(rc)
+    if ran_count == 0 and raw_commands:
+        print(
+            json.dumps(
+                {
+                    "success": False,
+                    "error": f"步骤 {step_id} 无已执行命令（可能仅含未支持的 run_files 行）",
+                }
+            ),
+            file=sys.stderr,
+        )
+        os._exit(1)
+    if "extract_stack_valid_region" in step_id:
+        stack_meta_dir = os.path.join(work_dir, "stack")
+        iw_xml = glob.glob(os.path.join(stack_meta_dir, "IW*.xml"))
+        if not iw_xml:
+            print(
+                json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            f"步骤 {step_id} 未在 {stack_meta_dir} 下生成 IW*.xml；"
+                            "第 7 步 merge 需要该目录（工作区为 .../stack 时路径为 .../stack/stack/，属 ISCE 约定）。"
+                        ),
+                    }
+                ),
+                file=sys.stderr,
             )
-            print(f"步骤 {step_id} 内层命令超时", file=sys.stderr)
             os._exit(1)
-        reader.join(timeout=5)
-        stdout_str = "".join(out_lines)
-        returncode = proc.returncode or 0
-        end_iso = datetime.utcnow().isoformat() + "Z"
-        _append_step_log(
-            step_log_path, step_id, argv, returncode,
-            stdout_str, "", start_iso, end_iso,
-        )
-        if returncode != 0:
-            os._exit(returncode)
-    # 步骤全部成功：显式退出，确保父进程能收到退出信号（不依赖 atexit/析构）
     os._exit(0)
 
 

@@ -8,6 +8,8 @@ import logging
 import os
 from pathlib import Path
 
+from ..workspace_bbox import read_bbox_from_kml
+
 from PySide6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -31,7 +33,12 @@ from PySide6.QtCore import Qt, QThread, Signal, Slot
 from PySide6.QtGui import QFont
 
 
-def _path_field_with_browse(line: QLineEdit, caption: str, is_file: bool = False) -> QWidget:
+def _path_field_with_browse(
+    line: QLineEdit,
+    caption: str,
+    is_file: bool = False,
+    on_dir_selected=None,
+) -> QWidget:
     w = QWidget()
     h = QHBoxLayout(w)
     h.setContentsMargins(0, 0, 0, 0)
@@ -41,15 +48,17 @@ def _path_field_with_browse(line: QLineEdit, caption: str, is_file: bool = False
     if is_file:
         btn.clicked.connect(lambda: _browse_file(line, caption))
     else:
-        btn.clicked.connect(lambda: _browse_dir(line, caption))
+        btn.clicked.connect(lambda: _browse_dir(line, caption, on_dir_selected))
     h.addWidget(btn)
     return w
 
 
-def _browse_dir(edit: QLineEdit, caption: str) -> None:
+def _browse_dir(edit: QLineEdit, caption: str, on_selected=None) -> None:
     path = QFileDialog.getExistingDirectory(None, caption)
     if path:
         edit.setText(path)
+        if on_selected:
+            on_selected(path)
 
 
 def _browse_file(edit: QLineEdit, caption: str) -> None:
@@ -66,6 +75,7 @@ def _bbox_to_two_decimals(n: float, s: float, w: float, e: float) -> tuple[str, 
 class StackSwathDetectWorker(QThread):
     """根据 SLC 目录与工作范围（SNWE）自动检测 Swath。"""
     finished_with_swaths = Signal(list)
+    finished_with_details = Signal(list, object)
 
     def __init__(self, slc_dir: str, bbox_snwe: list[float], parent=None):
         super().__init__(parent)
@@ -75,15 +85,37 @@ class StackSwathDetectWorker(QThread):
     def run(self) -> None:
         try:
             from backend.services.s1_processing_service import resolve_safe_paths
-            from backend.scripts.subswath_detector import detect_subswaths
+            from backend.scripts.subswath_detector import (
+                detect_subswaths,
+                detect_subswaths_with_details,
+            )
             safe_list = resolve_safe_paths(self._slc_dir)
             if not safe_list:
                 self.finished_with_swaths.emit([])
+                self.finished_with_details.emit([], {"error": "no_safe"})
                 return
-            swaths = detect_subswaths(safe_list[0], bbox_snwe=self._bbox_snwe)
+            try:
+                details = detect_subswaths_with_details(
+                    safe_list[0], bbox_snwe=self._bbox_snwe
+                )
+                swaths = details.get("swaths") or []
+            except Exception:
+                logging.exception("Stack Swath 检测失败，回退 detect_subswaths")
+                swaths = detect_subswaths(safe_list[0], bbox_snwe=self._bbox_snwe)
+                details = {
+                    "swaths": swaths,
+                    "reference_safe": safe_list[0],
+                    "safe_count": len(safe_list),
+                }
+            else:
+                details["reference_safe"] = safe_list[0]
+                details["safe_count"] = len(safe_list)
             self.finished_with_swaths.emit(swaths)
-        except Exception:
+            self.finished_with_details.emit(swaths, details)
+        except Exception as exc:
+            logging.exception("Stack Swath 自动检测异常")
             self.finished_with_swaths.emit([])
+            self.finished_with_details.emit([], {"error": str(exc)})
 
 
 class StackInitWorker(QThread):
@@ -117,7 +149,13 @@ class StackFlowConfigDialog(QDialog):
     # work_dir 初始化成功后，父窗口可打开流程界面
     init_succeeded = Signal(str)  # work_dir
 
-    def __init__(self, parent=None, default_project_path: str | None = None, project_node: dict | None = None):
+    def __init__(
+        self,
+        parent=None,
+        default_project_path: str | None = None,
+        project_node: dict | None = None,
+        initial_work_dir: str | None = None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("Stack 流程配置")
         self.setMinimumSize(620, 420)
@@ -125,10 +163,14 @@ class StackFlowConfigDialog(QDialog):
         self.setModal(False)
         self._default_project_path = default_project_path or ""
         self._project_node = project_node  # 用于从工程文件预填、初始化成功后写回
+        self._initial_work_dir = (initial_work_dir or "").strip()
         self._worker: StackInitWorker | None = None
         self._swath_worker: StackSwathDetectWorker | None = None
         self._build_ui()
         self._prefill_from_project()
+        self._refresh_slc_summary()
+        if self._initial_work_dir:
+            self.work_dir_edit.setText(self._initial_work_dir)
         self.open_flow_btn.setEnabled(bool(self.work_dir_edit.text().strip()))
 
     def _build_ui(self) -> None:
@@ -164,12 +206,31 @@ class StackFlowConfigDialog(QDialog):
         grp_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self.work_dir_edit = QLineEdit()
-        self.work_dir_edit.setPlaceholderText("工程路径/processing/stack 或自定义目录")
+        self.work_dir_edit.setPlaceholderText(
+            "建议 …/processing/stack（ISCE 会在其下再建 stack/ 放 IW*.xml，即 …/stack/stack/）"
+        )
         grp_layout.addRow("工作目录:", _path_field_with_browse(self.work_dir_edit, "选择工作目录"))
 
         self.slc_dir_edit = QLineEdit()
         self.slc_dir_edit.setPlaceholderText("Sentinel SLC zip 或 .SAFE 所在目录")
-        grp_layout.addRow("SLC 目录:", _path_field_with_browse(self.slc_dir_edit, "选择 SLC 目录"))
+        slc_row = QVBoxLayout()
+        slc_row.setContentsMargins(0, 0, 0, 0)
+        slc_row.setSpacing(4)
+        slc_row.addWidget(
+            _path_field_with_browse(
+                self.slc_dir_edit,
+                "选择 SLC 目录",
+                on_dir_selected=lambda _p: self._refresh_slc_summary(),
+            )
+        )
+        self._slc_info_label = QLabel("请选择 SLC 目录")
+        self._slc_info_label.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        self._slc_info_label.setWordWrap(True)
+        slc_row.addWidget(self._slc_info_label)
+        slc_widget = QWidget()
+        slc_widget.setLayout(slc_row)
+        grp_layout.addRow("SLC 目录:", slc_widget)
+        self.slc_dir_edit.textChanged.connect(self._on_slc_dir_changed)
 
         self.dem_edit = QLineEdit()
         self.dem_edit.setPlaceholderText("DEM 文件路径（WGS84）")
@@ -216,8 +277,25 @@ class StackFlowConfigDialog(QDialog):
         bbox_row.addWidget(self.bbox_e)
         for edit in (self.bbox_s, self.bbox_n, self.bbox_w, self.bbox_e):
             edit.editingFinished.connect(self._format_bbox_decimals)
+
+        # KML 导入行
+        kml_row = QHBoxLayout()
+        kml_row.setSpacing(8)
+        self._kml_btn = QPushButton("导入 KML")
+        self._kml_btn.setToolTip("从 KML 文件的多边形自动计算处理范围")
+        self._kml_btn.clicked.connect(self._on_import_kml)
+        kml_row.addWidget(self._kml_btn)
+        self._kml_label = QLabel("支持 KML 格式（经纬度坐标）")
+        self._kml_label.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        kml_row.addWidget(self._kml_label, 1)
+
+        bbox_vbox = QVBoxLayout()
+        bbox_vbox.setContentsMargins(0, 0, 0, 0)
+        bbox_vbox.setSpacing(4)
+        bbox_vbox.addLayout(bbox_row)
+        bbox_vbox.addLayout(kml_row)
         bbox_widget = QWidget()
-        bbox_widget.setLayout(bbox_row)
+        bbox_widget.setLayout(bbox_vbox)
         grp_layout.addRow("范围 (SNWE):", bbox_widget)
 
         self.reference_date_edit = QLineEdit()
@@ -538,6 +616,30 @@ class StackFlowConfigDialog(QDialog):
             self.auto_swath_btn.setEnabled(enabled)
         if hasattr(self, "dem_make_btn"):
             self.dem_make_btn.setEnabled(enabled)
+        if hasattr(self, "_kml_btn"):
+            self._kml_btn.setEnabled(enabled)
+
+    def _on_slc_dir_changed(self) -> None:
+        self._refresh_slc_summary()
+
+    def _refresh_slc_summary(self) -> None:
+        """扫描 SLC 目录并更新简要统计标签。"""
+        path = self.slc_dir_edit.text().strip()
+        if not path:
+            self._slc_info_label.setText("请选择 SLC 目录")
+            self._slc_info_label.setStyleSheet("color: #94a3b8; font-size: 12px;")
+            return
+        try:
+            from backend.services.s1_processing_service import format_slc_directory_summary
+            text = format_slc_directory_summary(path)
+            ok = "已发现" in text
+            self._slc_info_label.setText(text)
+            self._slc_info_label.setStyleSheet(
+                "color: #22c55e; font-size: 12px;" if ok else "color: #f59e0b; font-size: 12px;"
+            )
+        except Exception as exc:
+            self._slc_info_label.setText(f"扫描失败: {exc}")
+            self._slc_info_label.setStyleSheet("color: #ef4444; font-size: 12px;")
 
     @Slot()
     def _format_bbox_decimals(self) -> None:
@@ -553,6 +655,37 @@ class StackFlowConfigDialog(QDialog):
             edit.setText(f"{v:.2f}")
         except ValueError:
             pass
+
+    def _on_import_kml(self) -> None:
+        """从 KML 文件导入多边形边界，自动填入 SNWE 范围。"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择 KML 文件", "",
+            "KML (*.kml);;所有文件 (*.*)",
+        )
+        if not path:
+            return
+        try:
+            n, s, w, e = read_bbox_from_kml(path)
+            # 坐标合法性检查
+            if not (-90 <= s <= 90 and -90 <= n <= 90):
+                raise ValueError(f"纬度超出范围 (-90 ~ 90)：S={s}, N={n}")
+            if not (-180 <= w <= 180 and -180 <= e <= 180):
+                raise ValueError(f"经度超出范围 (-180 ~ 180)：W={w}, E={e}")
+            if s >= n:
+                raise ValueError(f"南纬必须小于北纬：S={s}, N={n}")
+            if w >= e:
+                raise ValueError(f"西经必须小于东经：W={w}, E={e}")
+            ss, nn, ww, ee = _bbox_to_two_decimals(n, s, w, e)
+            self.bbox_s.setText(ss)
+            self.bbox_n.setText(nn)
+            self.bbox_w.setText(ww)
+            self.bbox_e.setText(ee)
+            self._kml_label.setText(Path(path).name)
+            self._kml_label.setStyleSheet("color: #22c55e; font-size: 12px;")
+        except ValueError as exc:
+            self._kml_label.setText("导入失败")
+            self._kml_label.setStyleSheet("color: #ef4444; font-size: 12px;")
+            QMessageBox.warning(self, "KML 导入失败", str(exc))
 
     @Slot()
     def _on_auto_fill_swaths(self) -> None:
@@ -576,20 +709,40 @@ class StackFlowConfigDialog(QDialog):
         self.auto_swath_btn.setEnabled(False)
         self.log_edit.appendPlainText("正在根据工作范围检测 Swath…")
         self._swath_worker = StackSwathDetectWorker(slc_dir, bbox_snwe, self)
-        self._swath_worker.finished_with_swaths.connect(self._on_auto_fill_swaths_done)
+        self._swath_worker.finished_with_details.connect(self._on_auto_fill_swaths_done)
         self._swath_worker.start()
 
-    def _on_auto_fill_swaths_done(self, swaths: list) -> None:
+    def _on_auto_fill_swaths_done(self, swaths: list, details: dict) -> None:
         if hasattr(self, "_swath_worker") and self._swath_worker:
             self._swath_worker.deleteLater()
             self._swath_worker = None
         self.auto_swath_btn.setEnabled(True)
+        err = (details or {}).get("error")
+        if err == "no_safe":
+            self.log_edit.appendPlainText("未在 SLC 目录中找到 .zip 或 .SAFE 数据。")
+            QMessageBox.warning(
+                self,
+                "自动计算 Swaths",
+                "SLC 目录中未发现 .zip 或 .SAFE 文件，请检查路径。",
+            )
+            return
+        if err:
+            self.log_edit.appendPlainText(f"Swath 检测失败: {err}")
+            QMessageBox.warning(self, "自动计算 Swaths", f"检测过程出错：{err}")
+            return
+        ref = (details or {}).get("reference_safe")
+        if ref:
+            self.log_edit.appendPlainText(f"参考影像: {Path(ref).name}")
         if swaths:
             self.swaths_edit.setText(" ".join(map(str, swaths)))
             self.log_edit.appendPlainText(f"已根据工作范围自动填充 Swaths: {swaths}")
         else:
             self.log_edit.appendPlainText("未检测到与工作范围相交的 subswath，请检查 SLC 目录与范围或手动填写。")
-            QMessageBox.information(self, "自动计算 Swaths", "未检测到与工作范围相交的 subswath，请检查 SLC 目录与范围，或手动填写（如 1 2 3）。")
+            QMessageBox.information(
+                self,
+                "自动计算 Swaths",
+                "未检测到与工作范围相交的 subswath，请检查 SLC 目录与范围，或手动填写（如 1 2 3）。",
+            )
 
     def _on_dem_make(self) -> None:
         """打开 DEM 制作面板，预填工作范围（S/N/W/E）与 SLC 路径（用于根据 Swath 更新 DEM 范围）。"""
@@ -660,6 +813,16 @@ class StackFlowConfigDialog(QDialog):
             self._last_work_dir = result.get("work_dir")
             self.open_flow_btn.setEnabled(True)
             self._save_to_project()
+            op = result.get("orbit_preflight")
+            if op:
+                try:
+                    from backend.services.sentinel_orbit_asf import format_orbit_preflight_for_ui
+
+                    self.log_edit.appendPlainText("")
+                    self.log_edit.appendPlainText("--- 轨道预检（ASF 精密星历）---")
+                    self.log_edit.appendPlainText(format_orbit_preflight_for_ui(op))
+                except Exception:
+                    pass
             self.init_succeeded.emit(self._last_work_dir or "")
             QMessageBox.information(self, "初始化完成", "流程清单已生成，可点击「打开流程界面」查看步骤并运行。")
         else:

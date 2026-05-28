@@ -138,6 +138,8 @@ class StackFlowWidget(QWidget):
 
     # 从 Stack 进入时间序列：主窗口连接此信号并打开 MintPy 配置对话框（预填 stack_work_dir）
     request_open_mintpy_config = Signal(str)  # stack_work_dir
+    # 打开 Stack 配置对话框（重新初始化 / 补全 pipeline.json）
+    request_stack_flow_config = Signal(str)  # work_dir
 
     def __init__(self, work_dir: str, parent=None):
         super().__init__(parent)
@@ -153,6 +155,13 @@ class StackFlowWidget(QWidget):
         self._row_progress_bars: List[QProgressBar] = []  # 每行进度条（进度列）
         self._step_start_time: float | None = None  # 当前运行步开始时间
         self._build_ui()
+        self._load_pipeline()
+
+    def get_work_dir(self) -> str:
+        return self._work_dir
+
+    def reload_from_disk(self) -> None:
+        """重新读取 pipeline.json（例如在工作目录完成初始化后刷新当前页）。"""
         self._load_pipeline()
 
     def _build_ui(self) -> None:
@@ -182,6 +191,12 @@ class StackFlowWidget(QWidget):
         self._copy_path_btn.setFixedHeight(28)
         self._copy_path_btn.clicked.connect(lambda: self._copy_to_clipboard(self._work_dir))
         top_bar.addWidget(self._copy_path_btn)
+        self._stack_init_btn = QPushButton("初始化流程…")
+        self._stack_init_btn.setToolTip("打开 Stack 流程配置并执行初始化，生成 pipeline.json")
+        self._stack_init_btn.setFixedHeight(28)
+        self._stack_init_btn.clicked.connect(self._on_request_stack_config)
+        self._stack_init_btn.setVisible(False)
+        top_bar.addWidget(self._stack_init_btn)
         layout.addLayout(top_bar)
 
         # 处理进度区：紧凑布局，按钮缩小以突出下方步骤控制区
@@ -331,24 +346,28 @@ class StackFlowWidget(QWidget):
         """从 work_dir 读取 pipeline.json 并刷新表格。"""
         path = os.path.join(self._work_dir, "pipeline.json")
         if not os.path.isfile(path):
+            self._pipeline = None
             self._steps = []
             self._step_status = []
             self._step_durations = []
             self._table.setRowCount(0)
             self._log_edit.setPlainText("未找到 pipeline.json，请先在此工作目录执行「初始化流程」。")
             self._update_progress_summary()
+            self._apply_pipeline_dependent_controls()
             return
         try:
             import json
             with open(path, "r", encoding="utf-8") as f:
                 self._pipeline = json.load(f)
         except Exception as e:
+            self._pipeline = None
             self._steps = []
             self._step_status = []
             self._step_durations = []
             self._table.setRowCount(0)
             self._log_edit.setPlainText(f"读取 pipeline.json 失败: {e}")
             self._update_progress_summary()
+            self._apply_pipeline_dependent_controls()
             return
         self._steps = self._pipeline.get("steps") or []
         self._step_status = [STATUS_PENDING] * len(self._steps)
@@ -357,6 +376,7 @@ class StackFlowWidget(QWidget):
         self._fill_table()
         self._update_log_path_label()
         self._update_progress_summary()
+        self._apply_pipeline_dependent_controls()
 
     def _load_step_state(self) -> None:
         """从 work_dir/pipeline_state.json 合并步骤状态。"""
@@ -668,11 +688,27 @@ class StackFlowWidget(QWidget):
                     self._row_progress_bars[index].setValue(0)
             self._update_progress_summary()
 
+    def _apply_pipeline_dependent_controls(self) -> None:
+        """无有效步骤时禁用运行与时间序列入口，并显示「初始化流程」。"""
+        ok = len(self._steps) > 0
+        self._stack_init_btn.setVisible(not ok)
+        idle = not (self._worker and self._worker.isRunning()) and not (
+            self._single_step_worker and self._single_step_worker.isRunning()
+        )
+        self._run_one_btn.setEnabled(idle and ok)
+        self._run_from_btn.setEnabled(idle and ok)
+        self._run_all_btn.setEnabled(idle and ok)
+        self._mintpy_btn.setEnabled(idle and ok)
+        self._stack_init_btn.setEnabled(idle)
+
     def _set_buttons_enabled(self, enabled: bool) -> None:
-        self._run_one_btn.setEnabled(enabled)
-        self._run_from_btn.setEnabled(enabled)
-        self._run_all_btn.setEnabled(enabled)
-        self._mintpy_btn.setEnabled(enabled)
+        ok = len(self._steps) > 0
+        self._run_one_btn.setEnabled(enabled and ok)
+        self._run_from_btn.setEnabled(enabled and ok)
+        self._run_all_btn.setEnabled(enabled and ok)
+        self._mintpy_btn.setEnabled(enabled and ok)
+        if self._stack_init_btn.isVisible():
+            self._stack_init_btn.setEnabled(enabled)
         # 关闭顶部小型加载动画，避免视觉闪烁干扰；仅通过按钮禁用状态和整体进度条体现运行中状态
         self._loading_spinner.setVisible(False)
         for i in range(self._table.rowCount()):
@@ -685,6 +721,10 @@ class StackFlowWidget(QWidget):
     def _on_enter_mintpy(self) -> None:
         """进入时间序列：通知主窗口打开 MintPy 配置对话框（预填当前 Stack 工作目录）。"""
         self.request_open_mintpy_config.emit(self._work_dir)
+
+    @Slot()
+    def _on_request_stack_config(self) -> None:
+        self.request_stack_flow_config.emit(self._work_dir)
 
     @Slot()
     def _on_run_current_step(self) -> None:

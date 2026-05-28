@@ -137,8 +137,15 @@ class MintPyFlowWidget(QWidget):
         self._single_step_worker: MintPySingleStepWorker | None = None
         self._running_from_index = 0
         self._single_step_index = -1
+        self._init_worker: QThread | None = None
         self._build_ui()
-        self._load_pipeline()
+
+        # Auto-initialize if smallbaselineApp.cfg doesn't exist
+        cfg_path = os.path.join(self._work_dir, "smallbaselineApp.cfg")
+        if not os.path.isfile(cfg_path):
+            self._auto_init()
+        else:
+            self._load_pipeline()
 
     def _normalize_work_dir(self, work_dir: str) -> str:
         wd = (work_dir or "").strip()
@@ -181,7 +188,7 @@ class MintPyFlowWidget(QWidget):
 
         self._table = QTableWidget()
         self._table.setColumnCount(6)
-        self._table.setHorizontalHeaderLabels(["序号", "步骤", "状态", "运行", "配置", "查看"])
+        self._table.setHorizontalHeaderLabels(["序号", "步骤", "状态", "运行", "相关参数", "查看结果"])
         self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -223,6 +230,37 @@ class MintPyFlowWidget(QWidget):
         btn_layout.addWidget(self._run_all_btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
+
+    def _auto_init(self) -> None:
+        """自动初始化 MintPy 工作目录（当 smallbaselineApp.cfg 不存在时）。"""
+        self._log_edit.setPlainText("正在自动初始化 MintPy 工作目录…")
+        self._progress_bar.setValue(5)
+
+        # 推导 stack_work_dir：如果 work_dir 名为 "mintpy"，取上级目录
+        stack_dir = None
+        parent = os.path.dirname(self._work_dir)
+        if os.path.basename(self._work_dir).lower() == "mintpy" and parent:
+            stack_dir = parent
+
+        from .mintpy_quick_setup_dialog import MintPyInitWorker
+        self._init_worker = MintPyInitWorker(
+            self._work_dir, stack_dir, stack_dir, self
+        )
+        self._init_worker.finished_with_result.connect(self._on_auto_init_finished)
+        self._init_worker.start()
+
+    def _on_auto_init_finished(self, result: dict) -> None:
+        if self._init_worker:
+            self._init_worker.deleteLater()
+            self._init_worker = None
+        if result.get("success"):
+            self._progress_bar.setValue(100)
+            self._log_edit.setPlainText("初始化完成，正在加载步骤…")
+            self._load_pipeline()
+        else:
+            err = result.get("error_message", "未知错误")
+            self._progress_bar.setValue(0)
+            self._log_edit.setPlainText(f"自动初始化失败: {err}")
 
     def _load_pipeline(self) -> None:
         """从 mintpy_processing_service 获取步骤列表并刷新表格。"""
@@ -299,32 +337,29 @@ class MintPyFlowWidget(QWidget):
             run_btn.setProperty("step_index", i)
             run_btn.clicked.connect(lambda checked=False, idx=i: self._run_single_step(idx))
             self._table.setCellWidget(i, 3, run_btn)
-            cfg_btn = QPushButton("配置")
-            cfg_btn.setToolTip("编辑 smallbaselineApp.cfg")
-            cfg_btn.clicked.connect(self._on_edit_mintpy_config)
+            cfg_btn = QPushButton("相关参数")
+            cfg_btn.setToolTip("查看并编辑该步骤相关参数")
+            cfg_btn.clicked.connect(lambda checked=False, idx=i: self._on_open_step_config(idx))
             self._table.setCellWidget(i, 4, cfg_btn)
-            view_btn = QPushButton("查看")
-            view_btn.setToolTip("查看时间序列结果")
+            view_btn = QPushButton("查看结果")
+            view_btn.setToolTip("查看该步骤的输出结果")
             view_btn.clicked.connect(lambda checked=False, idx=i: self._on_view_mintpy_result(idx))
             self._table.setCellWidget(i, 5, view_btn)
         self._table.resizeRowsToContents()
 
-    @Slot()
-    def _on_edit_mintpy_config(self) -> None:
+    def _on_open_step_config(self, step_index: int) -> None:
+        """打开对应步骤的参数配置面板。"""
+        step = self._steps[step_index] if step_index < len(self._steps) else {}
+        step_id = step.get("id", "")
         cfg_path = os.path.join(self._work_dir, "smallbaselineApp.cfg")
         if not os.path.isfile(cfg_path):
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "配置", "未找到 smallbaselineApp.cfg")
+            QMessageBox.warning(self, "配置", "未找到 smallbaselineApp.cfg，请先初始化工作目录。")
             return
-        try:
-            import subprocess
-            if os.name == "nt":
-                os.startfile(cfg_path)
-            else:
-                subprocess.run(["xdg-open", cfg_path], check=False)
-        except Exception as e:
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "打开失败", str(e))
+        from .mintpy_param_panel import MintPyParamPanel
+
+        dlg = MintPyParamPanel(self._work_dir, self, focus_step=step_id)
+        dlg.config_saved.connect(lambda _path: self._log_edit.appendPlainText("配置已更新"))
+        dlg.show()
 
     def _on_view_mintpy_result(self, index: int) -> None:
         """打开 MintPy 产品查看（velocity、coherence 等）。"""

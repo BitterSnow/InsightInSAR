@@ -81,3 +81,7 @@ desktop_current_project.txt
 desktop_projects.json
 check_line.py
 main
+
+# runtime logs / temporary workspace
+/logs/*.log
+/tmp/

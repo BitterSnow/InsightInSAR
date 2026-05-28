@@ -13,7 +13,7 @@
 
 ### 构建（推荐一键）
 
-双击 **`packaging/build_all.bat`**，将自动打包桌面端与 WSL 部署向导，产出在 `dist/` 下（无需再手动运行脚本）。
+双击 **`packaging/build_all.bat`**，将自动打包桌面端、WSL 部署向导与 WSL 导出向导，产出在 `dist/` 下（无需再手动运行脚本）。
 
 如需给客户生成“少量更新包”（供向导「仅更新配置」一键覆盖 `backend/lib/scripts`），双击：
 
@@ -64,6 +64,16 @@ pyinstaller packaging/wsl_deploy_wizard.spec
 
 产出：`dist/InSAR WSL Deploy Wizard/`，内含 `InSAR WSL Deploy Wizard.exe`。可将该 exe 与同目录下依赖文件一并复制到「InSAR Desktop」目录，或通过安装包安装后与主程序同目录，用户双击即可运行向导。
 
+### 构建 WSL 导出向导 exe（可选）
+
+在项目根目录执行：
+
+```bash
+pyinstaller packaging/wsl_export_wizard.spec
+```
+
+产出：`dist/InSAR WSL Export Wizard/`，内含 `InSAR WSL Export Wizard.exe`。该工具用于在构建机上选择本机 WSL 发行版并导出为 `.tar` 镜像（用于离线交付）。
+
 ### 不打包时直接运行
 
 ```bash
@@ -92,6 +102,7 @@ python -m packaging.wsl_deploy_wizard [--app-root "D:\InSAR"]
 |------|------|------|
 | 主程序 | `dist/InSAR Desktop/` | 整目录拷贝，双击 `InSAR Desktop.exe` 运行 |
 | WSL 部署向导 | `dist/InSAR WSL Deploy Wizard/` | 整目录拷贝，双击 `InSAR WSL Deploy Wizard.exe` 运行 |
+| WSL 导出向导 | `dist/InSAR WSL Export Wizard/` | 构建机使用，双击 `InSAR WSL Export Wizard.exe` 选择发行版并导出 `insar-wsl.tar` |
 | WSL 镜像 | `dist/insar-wsl.tar` | 需在**有网络**的构建机先运行 `packaging/export_wsl_image.bat` 生成，再与上两项一起拷贝 |
 
 离线机上：先运行部署向导，选择 `insar-wsl.tar` 与导入目标目录完成导入；再运行 Desktop。若未拷贝 `insar-wsl.tar`，离线机无法使用 WSL 处理，仅可先配置工程与界面。

@@ -171,3 +171,22 @@ def icon_folder_open() -> QIcon:
 def icon_refresh() -> QIcon:
     """清理本步骤数据（Material: refresh，紫色）。"""
     return _mdi_icon("refresh", color=_FLOW_REFRESH_COLOR, fallback=_style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+
+
+# ---------- 工程右键菜单：Stack / 时间序列 ----------
+_MENU_ICON_COLOR = "#94a3b8"
+
+
+def icon_stack_flow() -> QIcon:
+    """打开 Stack 流程（层级/流水线）。"""
+    return _mdi_icon("layers-outline", color=_MENU_ICON_COLOR, fallback=_style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
+
+
+def icon_mintpy_flow() -> QIcon:
+    """打开时间序列分析（时序/图表）。"""
+    return _mdi_icon("chart-timeline-variant", color=_MENU_ICON_COLOR, fallback=_style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView))
+
+
+def icon_mintpy_config() -> QIcon:
+    """时间序列初始化/配置（设置）。"""
+    return _mdi_icon("cog-outline", color=_MENU_ICON_COLOR, fallback=_style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))

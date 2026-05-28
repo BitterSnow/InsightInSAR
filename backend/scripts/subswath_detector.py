@@ -46,6 +46,90 @@ class _SafeDirArchive:
         pass
 
 
+_SLC_ANNOTATION_RE = re.compile(
+    r"/s1[a-z]-iw[123]-slc-(?:vv|vh)-",
+    re.IGNORECASE,
+)
+
+
+def _is_slc_annotation_path(path: str) -> bool:
+    """仅匹配 IW SLC 产品 annotation（排除 calibration/noise/rfi 子目录）。"""
+    p = path.replace("\\", "/").lower()
+    if not p.endswith(".xml") or "/annotation/" not in p:
+        return False
+    if any(x in p for x in ("/calibration/", "/noise/", "/rfi/")):
+        return False
+    return bool(_SLC_ANNOTATION_RE.search(p))
+
+
+def _parse_gml_coordinates_bbox(coords_str: str) -> Optional[Tuple[float, float, float, float]]:
+    """解析 manifest gml:coordinates（lat,lon 对）为 (min_lon, min_lat, max_lon, max_lat)。"""
+    coords = []
+    for pair in coords_str.strip().split():
+        parts = pair.split(",")
+        if len(parts) != 2:
+            continue
+        try:
+            lat, lon = float(parts[0]), float(parts[1])
+            coords.append((lon, lat))
+        except ValueError:
+            continue
+    if not coords:
+        return None
+    lons = [c[0] for c in coords]
+    lats = [c[1] for c in coords]
+    return (min(lons), min(lats), max(lons), max(lats))
+
+
+def extract_product_footprint(sentinel1_path: str) -> Tuple[float, float, float, float]:
+    """
+    产品级覆盖范围 (min_lon, min_lat, max_lon, max_lat)。
+    优先 manifest.safe；失败则用各 subswath footprint 并集。
+    """
+    path = Path(sentinel1_path)
+    with _open_safe_archive(path) as z:
+        manifest_files = [f for f in z.namelist() if "manifest.safe" in f.lower()]
+        if manifest_files:
+            root = ET.fromstring(z.read(manifest_files[0]))
+            for elem in root.iter():
+                if elem.tag.endswith("coordinates") and elem.text and len(elem.text) > 20:
+                    bbox = _parse_gml_coordinates_bbox(elem.text)
+                    if bbox:
+                        return bbox
+    detector = SubswathDetector(str(path), bbox_snwe=(0.0, 1.0, 0.0, 1.0))
+    footprints = detector.extract_subswath_footprints()
+    if not footprints:
+        raise ValueError(f"无法解析产品覆盖范围: {sentinel1_path}")
+    min_lon = min(fp[0] for fp in footprints.values())
+    min_lat = min(fp[1] for fp in footprints.values())
+    max_lon = max(fp[2] for fp in footprints.values())
+    max_lat = max(fp[3] for fp in footprints.values())
+    return (min_lon, min_lat, max_lon, max_lat)
+
+
+def extract_relative_orbit_number(sentinel1_path: str) -> Optional[int]:
+    """从 manifest.safe 读取 relativeOrbitNumber（同 Path 校验用）。"""
+    path = Path(sentinel1_path)
+    try:
+        with _open_safe_archive(path) as z:
+            manifest_files = [f for f in z.namelist() if "manifest.safe" in f.lower()]
+            if not manifest_files:
+                return None
+            root = ET.fromstring(z.read(manifest_files[0]))
+            values: List[int] = []
+            for elem in root.iter():
+                if elem.tag.endswith("relativeOrbitNumber") and elem.text:
+                    try:
+                        values.append(int(elem.text.strip()))
+                    except ValueError:
+                        continue
+            if values:
+                return values[0]
+    except Exception:
+        return None
+    return None
+
+
 def _open_safe_archive(path: Path):
     """打开 .zip 或 .SAFE 目录，返回提供 namelist()/read() 的上下文管理器。"""
     path = Path(path)
@@ -192,9 +276,8 @@ class SubswathDetector:
             with _open_safe_archive(self.sentinel1_zip_path) as z:
                 # 获取所有annotation XML文件
                 annotation_files = [
-                    f for f in z.namelist() 
-                    if '/annotation/' in f and f.endswith('.xml') 
-                    and 'iw' in f.lower() and 'slc' in f.lower()
+                    f for f in z.namelist()
+                    if _is_slc_annotation_path(f)
                 ]
                 
                 if not annotation_files:
@@ -287,30 +370,24 @@ class SubswathDetector:
             (min_lon, min_lat, max_lon, max_lat) 或 None
         """
         try:
-            # 查找geolocationGrid
-            geoloc_grid = root.find('.//geolocationGrid')
-            if geoloc_grid is None:
-                return None
-            
-            # 提取所有坐标点
-            points = geoloc_grid.findall('.//geolocationGridPoint')
-            if not points:
-                return None
-            
             lons = []
             lats = []
-            
-            for point in points:
-                lon_elem = point.find('longitude')
-                lat_elem = point.find('latitude')
-                
+            for point in root.iter():
+                if not point.tag.endswith("geolocationGridPoint"):
+                    continue
+                lon_elem = lat_elem = None
+                for child in point:
+                    if child.tag.endswith("longitude"):
+                        lon_elem = child
+                    elif child.tag.endswith("latitude"):
+                        lat_elem = child
                 if lon_elem is not None and lat_elem is not None:
                     try:
                         lon = float(lon_elem.text)
                         lat = float(lat_elem.text)
                         lons.append(lon)
                         lats.append(lat)
-                    except (ValueError, AttributeError):
+                    except (ValueError, AttributeError, TypeError):
                         continue
             
             if not lons or not lats:
@@ -369,20 +446,9 @@ class SubswathDetector:
                 # 解析坐标字符串
                 coords_str = footprint.text
                 if coords_str:
-                    coords = []
-                    for pair in coords_str.strip().split():
-                        parts = pair.split(',')
-                        if len(parts) == 2:
-                            try:
-                                lon, lat = float(parts[0]), float(parts[1])
-                                coords.append((lon, lat))
-                            except ValueError:
-                                continue
-                    
-                    if coords:
-                        lons = [c[0] for c in coords]
-                        lats = [c[1] for c in coords]
-                        return (min(lons), min(lats), max(lons), max(lats))
+                    bbox = _parse_gml_coordinates_bbox(coords_str)
+                    if bbox:
+                        return bbox
             
             return None
             

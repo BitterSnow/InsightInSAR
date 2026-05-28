@@ -3,6 +3,7 @@ DEM 制作对话框：根据工作区与 Swath 计算范围，缺瓦片从 ESA �
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import Optional
 
@@ -25,6 +26,19 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QThread, Signal, Slot
 from PySide6.QtGui import QFont
+
+logger = logging.getLogger(__name__)
+
+
+def _sanitize_path(path: str) -> str:
+    """清理路径字符串，移除可能导致 embedded null character 错误的空字节和其他非法字符。"""
+    if not path:
+        return path
+    # 移除空字节（\x00）
+    sanitized = path.replace("\x00", "")
+    # 移除其他可能导致问题的控制字符
+    sanitized = "".join(c for c in sanitized if c >= " " or c in "\t\r\n")
+    return sanitized.strip()
 
 
 class DemStitchWorker(QThread):
@@ -70,8 +84,12 @@ class DemStitchWorker(QThread):
                 timeout=3600,
                 stream_callback=on_line,
             )
+            if not result.get("success"):
+                err = result.get("error_message") or "未知错误"
+                logger.error("DEM 制作失败: %s", err)
             self.finished_with_result.emit(result)
         except Exception as e:
+            logger.exception("DEM 制作异常: %s", e)
             self.finished_with_result.emit({
                 "success": False,
                 "returncode": -1,
@@ -112,7 +130,10 @@ class DemMakeDialog(QDialog):
 
         title = QLabel("DEM 制作")
         title.setFont(QFont("Segoe UI", 11, QFont.Weight.DemiBold))
-        subtitle = QLabel("DEM 原始数据存放目录；缺瓦片时从 ESA SRTMGL1 自动下载，再在 WSL 内用 dem.py 拼接（1 弧秒）。")
+        subtitle = QLabel(
+            "DEM 原始数据存放目录；缺瓦片时从 ESA 下载，再在 WSL（Ubuntu）内用 dem.py 拼接。"
+            "网络盘（如 N:）若 WSL 未自动挂载，程序会尝试 drvfs 补挂。"
+        )
         subtitle.setStyleSheet("color: #94a3b8; font-size: 12px;")
         subtitle.setWordWrap(True)
         layout.addWidget(title)
@@ -123,7 +144,7 @@ class DemMakeDialog(QDialog):
         form.setSpacing(8)
 
         self.raw_dir_edit = QLineEdit()
-        self.raw_dir_edit.setPlaceholderText("DEM 原始瓦片所在文件夹（缺瓦片时从此处下载）")
+        self.raw_dir_edit.setPlaceholderText("如 N:\\NASASRTM1（WSL 路径 /mnt/n/...）")
         browse_raw = QPushButton("浏览…")
         browse_raw.clicked.connect(self._on_browse_raw_dir)
         raw_row = QWidget()
@@ -247,8 +268,7 @@ class DemMakeDialog(QDialog):
                 f"根据工作区与 Swath 计算得到 DEM 范围：南 {dem_s} 北 {dem_n} 西 {dem_w} 东 {dem_e}。",
             )
         except Exception as ex:
-            import logging
-            logging.exception("DEM 根据工作区更新范围失败: %s", ex)
+            logger.exception("DEM 根据工作区更新范围失败: %s", ex)
             QMessageBox.warning(self, "更新范围失败", str(ex))
 
     @Slot()
@@ -260,21 +280,44 @@ class DemMakeDialog(QDialog):
         if w >= e:
             QMessageBox.warning(self, "范围错误", "西界须小于东界。")
             return
-        raw_dir = self.raw_dir_edit.text().strip()
+        raw_dir = _sanitize_path(self.raw_dir_edit.text().strip())
         if not raw_dir:
             QMessageBox.warning(self, "DEM 原始数据目录", "请选择 DEM 原始数据所在文件夹。")
             return
+        # 检查路径是否包含被清理的非法字符，若有则提示用户
+        original_raw = self.raw_dir_edit.text().strip()
+        if original_raw != raw_dir:
+            logger.warning("DEM 原始数据目录路径包含非法字符，已自动清理: %r -> %r", original_raw, raw_dir)
+            self.raw_dir_edit.setText(raw_dir)
         if not os.path.isdir(raw_dir):
-            QMessageBox.warning(self, "DEM 原始数据目录", "所选路径不是有效目录，请先创建或选择有效目录。")
+            QMessageBox.warning(self, "DEM 原始数据目录", f"所选路径不是有效目录：{raw_dir}\n请先创建或选择有效目录。")
             return
-        output_dir = self.output_dir_edit.text().strip()
+        output_dir = _sanitize_path(self.output_dir_edit.text().strip())
         if not output_dir:
             QMessageBox.warning(self, "输出目录", "请选择 DEM 输出目录。")
             return
+        original_out = self.output_dir_edit.text().strip()
+        if original_out != output_dir:
+            logger.warning("输出目录路径包含非法字符，已自动清理: %r -> %r", original_out, output_dir)
+            self.output_dir_edit.setText(output_dir)
         if not os.path.isdir(output_dir):
-            QMessageBox.warning(self, "输出目录", "所选路径不是有效目录，请先创建或选择有效目录。")
+            QMessageBox.warning(self, "输出目录", f"所选路径不是有效目录：{output_dir}\n请先创建或选择有效目录。")
             return
-        out_name = self.out_name_edit.text().strip() or None
+        try:
+            from backend.services import wsl_runner
+
+            if wsl_runner.use_wsl():
+                _, raw_err = wsl_runner.resolve_windows_path_to_wsl(raw_dir)
+                if raw_err:
+                    QMessageBox.warning(self, "WSL 无法访问目录", raw_err)
+                    return
+                _, out_err = wsl_runner.resolve_windows_path_to_wsl(output_dir)
+                if out_err:
+                    QMessageBox.warning(self, "WSL 无法访问输出目录", out_err)
+                    return
+        except Exception as ex:
+            logger.warning("WSL 路径预检跳过: %s", ex)
+        out_name = _sanitize_path(self.out_name_edit.text().strip()) or None
         self.log_edit.clear()
         self.progress_bar.setVisible(True)
         self.run_btn.setEnabled(False)
@@ -309,7 +352,14 @@ class DemMakeDialog(QDialog):
                 self.dem_succeeded.emit(out_path)
             else:
                 msg += f"\n请到输出目录查看: {self.output_dir_edit.text().strip()}"
+            logger.info("DEM 制作完成: output_path=%s", out_path)
             QMessageBox.information(self, "完成", msg)
         else:
             err = result.get("error_message") or result.get("stdout") or "未知错误"
+            stderr = result.get("stderr", "")
+            returncode = result.get("returncode", -1)
+            logger.error(
+                "DEM 制作失败: returncode=%s, error=%s, stderr=%s",
+                returncode, err, stderr,
+            )
             QMessageBox.warning(self, "DEM 制作失败", err)

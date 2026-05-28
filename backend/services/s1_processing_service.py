@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 from typing import Callable, List, Optional
@@ -86,6 +87,56 @@ def resolve_safe_paths(path: str) -> List[str]:
         elif name.upper().endswith(".SAFE") and os.path.isdir(full):
             items.append(full)
     return items
+
+
+def summarize_slc_directory(path: str) -> dict:
+    """
+    扫描 SLC 目录，返回 zip/.SAFE 数量与成像日期范围，供桌面 UI 简要展示。
+    """
+    paths = resolve_safe_paths(path)
+    zip_count = sum(1 for p in paths if p.lower().endswith(".zip"))
+    safe_count = len(paths) - zip_count
+    dates: list[str] = []
+    for p in paths:
+        m = re.search(r"(\d{8})T", os.path.basename(p), re.IGNORECASE)
+        if m:
+            dates.append(m.group(1))
+    dates.sort()
+    if dates:
+        date_range = dates[0] if dates[0] == dates[-1] else f"{dates[0]}–{dates[-1]}"
+    else:
+        date_range = ""
+    return {
+        "total": len(paths),
+        "zip_count": zip_count,
+        "safe_dir_count": safe_count,
+        "date_range": date_range,
+    }
+
+
+def format_slc_directory_summary(path: str) -> str:
+    """将 summarize_slc_directory 格式化为单行 UI 文案。"""
+    p = (path or "").strip()
+    if not p:
+        return "请选择 SLC 目录"
+    if not os.path.exists(p):
+        return "路径不存在"
+    info = summarize_slc_directory(p)
+    total = info["total"]
+    if total == 0:
+        return "未发现 .zip 或 .SAFE 数据"
+    parts = [f"已发现 {total} 景"]
+    zc, sc = info["zip_count"], info["safe_dir_count"]
+    type_bits = []
+    if zc:
+        type_bits.append(f".zip {zc}")
+    if sc:
+        type_bits.append(f".SAFE {sc}")
+    if type_bits:
+        parts.append(f"（{', '.join(type_bits)}）")
+    if info["date_range"]:
+        parts.append(f"，日期 {info['date_range']}")
+    return "".join(parts)
 
 
 def resolve_region_of_interest(

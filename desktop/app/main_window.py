@@ -3,6 +3,7 @@
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from PySide6.QtWidgets import (
@@ -29,7 +30,16 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Slot, Signal, QSize
 from PySide6.QtGui import QAction, QFont, QIcon
 
-from .icons import icon_open_folder, icon_new_folder, icon_edit, icon_workspace
+from .icons import (
+    icon_open_folder,
+    icon_new_folder,
+    icon_edit,
+    icon_workspace,
+    icon_refresh,
+    icon_stack_flow,
+    icon_mintpy_flow,
+    icon_mintpy_config,
+)
 from .widgets.define_project_dialog import DefineProjectDialog
 from .widgets.edit_project_dialog import EditProjectDialog
 from .widgets.define_workspace_dialog import DefineWorkspaceDialog
@@ -37,7 +47,12 @@ from .widgets.tile_map_widget import MapWithToolbar, TileMapWidget, get_bbox_fro
 from .widgets.stack_flow_config_dialog import StackFlowConfigDialog
 from .widgets.stack_flow_widget import StackFlowWidget
 from .widgets.mintpy_config_dialog import MintPyConfigDialog
+from .widgets.mintpy_quick_setup_dialog import MintPyQuickSetupDialog
 from .widgets.mintpy_flow_widget import MintPyFlowWidget
+from .widgets.new_data_to_download_dialog import NewDataToDownloadDialog
+from .widgets.slc_hardlink_by_workspace_dialog import SlcHardlinkByWorkspaceDialog
+from .widgets.check_zip_files_dialog import CheckZipFilesDialog
+from .widgets.mintpy_to_shapefile_dialog import MintPyToShapefileDialog
 from . import project_store
 
 
@@ -117,6 +132,8 @@ class MainWindow(QMainWindow):
         self._selected_project_id: str | None = None
         # 地图 Tab：project_id -> MapWithToolbar（含工具栏+地图），用于复用或刷新
         self._map_tabs: dict[str, MapWithToolbar] = {}
+        # 工具对话框引用：避免 show() 后被 GC 回收
+        self._tool_dialogs: list = []
 
         self._build_menubar()
 
@@ -168,8 +185,20 @@ class MainWindow(QMainWindow):
         act_quit.triggered.connect(self.close)
         file_menu.addAction(act_quit)
 
-        # 工具（占位，暂不填充）
-        menubar.addMenu("工具(&T)")
+        # 工具
+        tools_menu = menubar.addMenu("工具(&T)")
+        act_new_data = QAction("新数据待下载列表(&N)...", self)
+        act_new_data.triggered.connect(self._on_tool_new_data_to_download)
+        tools_menu.addAction(act_new_data)
+        act_slc_hardlink = QAction("SLC 按工作区硬链接(&L)...", self)
+        act_slc_hardlink.triggered.connect(self._on_tool_slc_hardlink_by_workspace)
+        tools_menu.addAction(act_slc_hardlink)
+        act_check_zip = QAction("检查 ZIP 文件(&Z)...", self)
+        act_check_zip.triggered.connect(self._on_tool_check_zip_files)
+        tools_menu.addAction(act_check_zip)
+        act_mintpy_shp = QAction("MintPy 转 Shapefile(&S)...", self)
+        act_mintpy_shp.triggered.connect(self._on_tool_mintpy_to_shapefile)
+        tools_menu.addAction(act_mintpy_shp)
 
         # 视图（占位，便于后续扩展）
         view_menu = menubar.addMenu("视图(&V)")
@@ -187,6 +216,30 @@ class MainWindow(QMainWindow):
             "关于",
             "Insight InSAR Processing System\n\nInSAR 数据处理桌面端。",
         )
+
+    def _on_tool_new_data_to_download(self) -> None:
+        self._tool_dialogs = [d for d in self._tool_dialogs if d.isVisible()]
+        dlg = NewDataToDownloadDialog(self)
+        dlg.show()
+        self._tool_dialogs.append(dlg)
+
+    def _on_tool_slc_hardlink_by_workspace(self) -> None:
+        self._tool_dialogs = [d for d in self._tool_dialogs if d.isVisible()]
+        dlg = SlcHardlinkByWorkspaceDialog(self)
+        dlg.show()
+        self._tool_dialogs.append(dlg)
+
+    def _on_tool_check_zip_files(self) -> None:
+        self._tool_dialogs = [d for d in self._tool_dialogs if d.isVisible()]
+        dlg = CheckZipFilesDialog(self)
+        dlg.show()
+        self._tool_dialogs.append(dlg)
+
+    def _on_tool_mintpy_to_shapefile(self) -> None:
+        self._tool_dialogs = [d for d in self._tool_dialogs if d.isVisible()]
+        dlg = MintPyToShapefileDialog(self)
+        dlg.show()
+        self._tool_dialogs.append(dlg)
 
     def _build_header(self) -> QFrame:
         """顶栏：中性分隔条 + 工程区标题，无醒目按钮。"""
@@ -483,15 +536,19 @@ class MainWindow(QMainWindow):
             workspace_action = QAction(icon_workspace(), "定义工作区", self)
             workspace_action.triggered.connect(lambda: self._on_define_workspace(node))
             menu.addSeparator()
-            stack_flow_action = QAction("打开 Stack 流程", self)
+            stack_init_action = QAction(icon_refresh(), "Stack 流程初始化…", self)
+            stack_init_action.setToolTip("打开配置对话框并执行初始化（生成 pipeline.json），未初始化或需重新配置时使用")
+            stack_init_action.triggered.connect(lambda: self._on_open_stack_flow_config_for_project(node))
+            menu.addAction(stack_init_action)
+            stack_flow_action = QAction(icon_stack_flow(), "打开 Stack 流程", self)
             stack_flow_action.triggered.connect(lambda: self._on_open_stack_flow_for_project(node))
             menu.addAction(stack_flow_action)
-            mintpy_flow_action = QAction("打开时间序列分析", self)
-            mintpy_flow_action.triggered.connect(lambda: self._on_open_mintpy_flow_for_project(node))
-            menu.addAction(mintpy_flow_action)
-            mintpy_init_action = QAction("时间序列初始化/配置…", self)
+            mintpy_init_action = QAction(icon_mintpy_config(), "时间序列参数配置…", self)
             mintpy_init_action.triggered.connect(lambda: self._on_open_mintpy_config_for_project(node))
             menu.addAction(mintpy_init_action)
+            mintpy_flow_action = QAction(icon_mintpy_flow(), "打开时间序列分析", self)
+            mintpy_flow_action.triggered.connect(lambda: self._on_open_mintpy_flow_for_project(node))
+            menu.addAction(mintpy_flow_action)
         
         elif node_type == "data":
             # 数据节点：暂无操作
@@ -579,19 +636,93 @@ class MainWindow(QMainWindow):
         dlg.init_succeeded.connect(self._on_stack_flow_opened)
         dlg.show()
 
+    def _find_project_node_for_stack_work_dir(self, work_dir: str) -> dict | None:
+        """若 work_dir 位于某工程目录下，返回该工程节点。"""
+        try:
+            work = Path(work_dir).resolve().as_posix()
+            for node in self._projects:
+                pdir = (node.get("projectPath") or "").strip()
+                if not pdir:
+                    continue
+                base = Path(pdir).resolve().as_posix()
+                if work == base or work.startswith(base + "/") or work.startswith(base + "\\"):
+                    return node
+        except Exception:
+            pass
+        return None
+
     @Slot(str)
     def _on_stack_flow_opened(self, work_dir: str) -> None:
         """在内容区新 Tab 中打开流程界面；若 work_dir 属于某工程则写回 stack_work_dir。"""
         if not work_dir or not work_dir.strip():
             return
         work_dir = work_dir.strip()
+        try:
+            wd_resolved = str(Path(work_dir).resolve())
+        except Exception:
+            wd_resolved = os.path.normcase(os.path.normpath(work_dir))
+        for ti in range(self._tab_widget.count()):
+            w = self._tab_widget.widget(ti)
+            if isinstance(w, StackFlowWidget):
+                try:
+                    ow = str(Path(w.get_work_dir()).resolve())
+                except Exception:
+                    ow = os.path.normcase(os.path.normpath(w.get_work_dir()))
+                if ow == wd_resolved:
+                    w.reload_from_disk()
+                    self._tab_widget.setCurrentWidget(w)
+                    self.statusBar().showMessage(
+                        f"已刷新流程：{work_dir[:60]}…" if len(work_dir) > 60 else f"已刷新流程：{work_dir}"
+                    )
+                    self._save_stack_work_dir_to_project(work_dir)
+                    return
         flow = StackFlowWidget(work_dir, self)
         flow.request_open_mintpy_config.connect(self._on_request_mintpy_config)
+        flow.request_stack_flow_config.connect(self._on_request_stack_flow_config)
         tab_title = "Stack 流程"
         self._tab_widget.addTab(flow, tab_title)
         self._tab_widget.setCurrentWidget(flow)
         self.statusBar().showMessage(f"已打开流程：{work_dir[:60]}…" if len(work_dir) > 60 else f"已打开流程：{work_dir}")
         self._save_stack_work_dir_to_project(work_dir)
+
+    @Slot(str)
+    def _on_request_stack_flow_config(self, work_dir: str) -> None:
+        """从流程页请求打开 Stack 配置（例如缺少 pipeline.json 时）。"""
+        wd = (work_dir or "").strip()
+        if not wd:
+            return
+        node = self._find_project_node_for_stack_work_dir(wd)
+        pdir = (node.get("projectPath") if node else None) or None
+        dlg = StackFlowConfigDialog(
+            self,
+            default_project_path=pdir,
+            project_node=node,
+            initial_work_dir=wd,
+        )
+        dlg.init_succeeded.connect(self._on_stack_flow_opened)
+        dlg.show()
+
+    def _on_open_stack_flow_config_for_project(self, node: dict) -> None:
+        """工程右键：始终打开 Stack 配置对话框（预填工程中的 stack 工作目录）。"""
+        from .project_file import find_project_path, load_project_md_full
+
+        pdir = node.get("projectPath") or ""
+        pid = node.get("id") or ""
+        if not pdir or not pid:
+            return
+        initial: str | None = None
+        proj_path = find_project_path(Path(pdir), pid)
+        if proj_path:
+            data = load_project_md_full(proj_path) or {}
+            initial = (data.get("stack_work_dir") or "").strip() or None
+        dlg = StackFlowConfigDialog(
+            self,
+            default_project_path=pdir,
+            project_node=node,
+            initial_work_dir=initial,
+        )
+        dlg.init_succeeded.connect(self._on_stack_flow_opened)
+        dlg.show()
 
     def _save_stack_work_dir_to_project(self, work_dir: str) -> None:
         """若 work_dir 位于某工程目录下，将该工程的 stack_work_dir 写入 YAML。"""
@@ -639,12 +770,12 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_request_mintpy_config(self, stack_work_dir: str) -> None:
-        """从 Stack 流程进入时间序列：打开配置对话框并预填 Stack 工作目录。"""
+        """从 Stack 流程进入时间序列：自动推导目录，后台初始化，直接打开 Flow。"""
         if not stack_work_dir or not stack_work_dir.strip():
             return
-        dlg = MintPyConfigDialog(self, default_stack_work_dir=stack_work_dir.strip())
-        dlg.init_succeeded.connect(self._on_mintpy_flow_opened)
-        dlg.show()
+        stack_work_dir = stack_work_dir.strip()
+        mintpy_dir = os.path.join(stack_work_dir, "mintpy")
+        self._auto_init_and_open_mintpy(mintpy_dir, stack_work_dir)
 
     @Slot()
     def _on_mintpy_flow(self) -> None:
@@ -666,9 +797,30 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"已打开时间序列流程：{work_dir[:60]}…" if len(work_dir) > 60 else f"已打开时间序列流程：{work_dir}")
         self._save_mintpy_work_dir_to_project(work_dir)
 
+    def _auto_init_and_open_mintpy(self, mintpy_dir: str, stack_work_dir: str) -> None:
+        """自动初始化 MintPy 工作目录并在完成后打开 Flow Tab。"""
+        from .widgets.mintpy_quick_setup_dialog import MintPyInitWorker
+
+        self.statusBar().showMessage(f"正在初始化 MintPy 工作目录: {mintpy_dir}")
+
+        def on_finished(result: dict) -> None:
+            worker.deleteLater()
+            if result.get("success"):
+                wd = result.get("work_dir", mintpy_dir)
+                self._on_mintpy_flow_opened(wd)
+            else:
+                err = result.get("error_message", "未知错误")
+                self.statusBar().showMessage("MintPy 初始化失败")
+                QMessageBox.warning(self, "初始化失败", f"MintPy 初始化失败:\n{err}")
+
+        worker = MintPyInitWorker(mintpy_dir, stack_work_dir, stack_work_dir, self)
+        worker.finished_with_result.connect(on_finished)
+        worker.start()
+
     def _on_open_stack_flow_for_project(self, node: dict) -> None:
-        """从工程节点打开 Stack 流程：若工程已有关联 stack_work_dir 则直接打开 Tab，否则打开配置对话框。"""
+        """从工程节点打开 Stack：仅当工作目录存在且已生成 pipeline.json 时直接打开流程页，否则打开配置对话框。"""
         from .project_file import find_project_path, load_project_md_full
+
         pdir = node.get("projectPath") or ""
         pid = node.get("id") or ""
         if not pdir or not pid:
@@ -678,29 +830,49 @@ class MainWindow(QMainWindow):
             data = load_project_md_full(proj_path)
             work_dir = (data.get("stack_work_dir") or "").strip()
             if work_dir and Path(work_dir).exists():
-                self._on_stack_flow_opened(work_dir)
-                return
+                pipeline_json = os.path.join(work_dir, "pipeline.json")
+                if os.path.isfile(pipeline_json):
+                    self._on_stack_flow_opened(work_dir)
+                    return
         dlg = StackFlowConfigDialog(self, default_project_path=pdir, project_node=node)
         dlg.init_succeeded.connect(self._on_stack_flow_opened)
         dlg.show()
 
     def _on_open_mintpy_flow_for_project(self, node: dict) -> None:
-        """从工程节点打开时间序列：若工程已有关联 mintpy_work_dir 则直接打开 Tab，否则打开配置对话框。"""
+        """
+        从工程节点打开时间序列分析（快速入口）。
+
+        三级自动推导：
+        1. mintpy_work_dir 已保存且目录存在 → 直接打开 Flow Tab
+        2. stack_work_dir 已保存 → 自动推导 mintpy 目录，后台初始化，完成后打开
+        3. 都没有 → 弹出精简版目录选择对话框
+        """
         from .project_file import find_project_path, load_project_md_full
         pdir = node.get("projectPath") or ""
         pid = node.get("id") or ""
         if not pdir or not pid:
             return
+
         proj_path = find_project_path(Path(pdir), pid)
-        if proj_path:
-            data = load_project_md_full(proj_path)
-            work_dir = (data.get("mintpy_work_dir") or "").strip()
-            if work_dir and Path(work_dir).exists():
-                self._on_mintpy_flow_opened(work_dir)
-                return
-        dlg = MintPyConfigDialog(self, default_stack_work_dir=None)
-        dlg.init_succeeded.connect(self._on_mintpy_flow_opened)
-        dlg.show()
+        data = load_project_md_full(proj_path) if proj_path else {}
+
+        # 情况1: 已有 mintpy_work_dir 且目录存在
+        mintpy_dir = (data.get("mintpy_work_dir") or "").strip()
+        if mintpy_dir and Path(mintpy_dir).exists():
+            self._on_mintpy_flow_opened(mintpy_dir)
+            return
+
+        # 情况2: 有 stack_work_dir → 自动推导并初始化
+        stack_dir = (data.get("stack_work_dir") or "").strip()
+        if stack_dir:
+            mintpy_dir = os.path.join(stack_dir, "mintpy")
+            self._auto_init_and_open_mintpy(mintpy_dir, stack_dir)
+            return
+
+        # 情况3: 都没有 → 弹出精简对话框
+        dlg = MintPyQuickSetupDialog(self, stack_work_dir=None)
+        dlg.setup_complete.connect(self._on_mintpy_flow_opened)
+        dlg.exec()
 
     def _on_open_mintpy_config_for_project(self, node: dict) -> None:
         """

@@ -76,8 +76,8 @@ git clone <本项目仓库地址> insar-system
 约定：
 
 - 项目根：`~/insar-system`（或 `/home/<用户>/insar-system`）。
-- Stack 脚本：`~/insar-system/lib/isce2-main/contrib/stack/topsStack/stackSentinel.py`、`SentinelWrapper.py`。
-- 若使用 conda 安装的 ISCE2，topsStack 脚本可能需从本仓库的 `lib/isce2-main` 获取，或与 conda 安装路径配合使用（见下方环境脚本）。
+- Stack 脚本（conda isce2）：`$CONDA_PREFIX/share/isce2/topsStack/stackSentinel.py`（桥接自动探测，勿指向 `/mnt/...` 下 Windows 源码树）。
+- DEM：`$CONDA_PREFIX/lib/python3.11/site-packages/isce/applications/dem.py`（由 `import isce` 解析）。
 
 ## 6. 环境激活脚本（供桥接调用前 source）
 
@@ -95,7 +95,7 @@ fi
 # export SNAPHU_BIN=/path/to/snaphu/bin
 # 项目代码路径（用于 Python 找 topsStack 等）
 export INSAR_PROJECT_ROOT="${INSAR_PROJECT_ROOT:-$HOME/insar-system}"
-export PYTHONPATH="${INSAR_PROJECT_ROOT}/lib/isce2-main/contrib/stack:${PYTHONPATH:-}"
+# topsStack / ISCE 包路径由 conda 提供，见 scripts/wsl/env_isce2.sh
 ```
 
 桥接时会传入 `INSAR_PROJECT_ROOT`（WSL 路径），无需在脚本内写死。
