@@ -17,7 +17,7 @@ if errorlevel 1 (
   )
 )
 
-if not defined INSAR_WSL_ENV_SCRIPT set INSAR_WSL_ENV_SCRIPT=~/insar-wsl/env_isce2.sh
+REM INSAR_WSL_ENV_SCRIPT: leave unset to auto-pick project scripts/wsl/env_isce2.sh
 if not defined INSAR_WSL_WORKSPACE_ROOT set INSAR_WSL_WORKSPACE_ROOT=~/insar-projects
 if not defined INSAR_WSL_MINTPY_SRC set INSAR_WSL_MINTPY_SRC=~/MintPy/MintPy/src
 

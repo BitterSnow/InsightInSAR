@@ -89,3 +89,7 @@ main
 # local ssh key copies (safety)
 /github
 /github.pub
+
+# tutorial TTS output (regenerate with scripts/video/tts_batch.py)
+docs/video/audio/
+docs/video/audio-male/

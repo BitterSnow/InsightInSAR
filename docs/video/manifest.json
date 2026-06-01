@@ -1,0 +1,51 @@
+{
+  "generated": "2026-06-01",
+  "voices": {
+    "female": {
+      "id": "zh-CN-XiaoxiaoNeural",
+      "label": "晓晓（女）",
+      "dir": "audio/"
+    },
+    "male": {
+      "id": "zh-CN-YunxiNeural",
+      "label": "云希（男）",
+      "dir": "audio-male/"
+    }
+  },
+  "rate": "+0%",
+  "sources": [
+    "README.md",
+    "packaging/README.md",
+    "docs/installation_and_deployment.md"
+  ],
+  "audio_male": {
+    "full": "audio-male/narration-full.mp3",
+    "by_section": [
+      "audio-male/full-01-00-opening.mp3",
+      "audio-male/full-02-01-intro.mp3",
+      "audio-male/full-03-02-install.mp3",
+      "audio-male/full-04-03-usage.mp3",
+      "audio-male/full-05-99-closing.mp3"
+    ],
+    "by_part": [
+      "audio-male/part1-narration-part1-intro.mp3",
+      "audio-male/part2-narration-part2-install.mp3",
+      "audio-male/part3-narration-part3-usage.mp3"
+    ]
+  },
+  "audio_female": {
+    "full": "audio/narration-full.mp3",
+    "by_section": [
+      "audio/full-01-00-opening.mp3",
+      "audio/full-02-01-intro.mp3",
+      "audio/full-03-02-install.mp3",
+      "audio/full-04-03-usage.mp3",
+      "audio/full-05-99-closing.mp3"
+    ],
+    "by_part": [
+      "audio/part1-narration-part1-intro.mp3",
+      "audio/part2-narration-part2-install.mp3",
+      "audio/part3-narration-part3-usage.mp3"
+    ]
+  }
+}

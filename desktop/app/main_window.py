@@ -196,7 +196,7 @@ class MainWindow(QMainWindow):
         act_check_zip = QAction("检查 ZIP 文件(&Z)...", self)
         act_check_zip.triggered.connect(self._on_tool_check_zip_files)
         tools_menu.addAction(act_check_zip)
-        act_mintpy_shp = QAction("MintPy 转 Shapefile(&S)...", self)
+        act_mintpy_shp = QAction("MintPy 转矢量(&S)...", self)
         act_mintpy_shp.triggered.connect(self._on_tool_mintpy_to_shapefile)
         tools_menu.addAction(act_mintpy_shp)
 

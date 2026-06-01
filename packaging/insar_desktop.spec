@@ -25,6 +25,8 @@ a = Analysis(
         "backend.services.s1_processing_service",
         "backend.services.stack_processing_service",
         "backend.services.mintpy_processing_service",
+        "backend.services.mintpy_vector_export_service",
+        "backend.scripts.run_mintpy_to_shapefile_wsl",
         "backend.services.dem_processing_service",
         "backend.scripts.subswath_detector",
         "backend.scripts.run_s1_extract_wsl",

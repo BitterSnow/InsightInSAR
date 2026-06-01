@@ -720,12 +720,54 @@ def _get_wsl_default_env_script() -> Optional[str]:
         return None
 
 
+def _wsl_env_script_exists(env_script: str) -> bool:
+    """检查 WSL 内 env 脚本是否存在（支持 ~/ 路径）。"""
+    s = (env_script or "").strip()
+    if not s:
+        return False
+    if s.startswith("~/"):
+        suffix = s[2:].replace("'", "'\"'\"'")
+        bash_cmd = f'test -f "$HOME/{suffix}"'
+    else:
+        safe = s.replace("'", "'\"'\"'")
+        bash_cmd = f"test -f '{safe}'"
+    argv = [_wsl_executable()]
+    distro = get_wsl_distro()
+    if distro:
+        argv.extend(["-d", distro])
+    argv.extend(["-e", "bash", "-c", bash_cmd])
+    try:
+        r = subprocess.run(
+            argv, capture_output=True, text=True, timeout=15,
+            encoding="utf-8", errors="replace",
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 def get_wsl_env_script() -> Optional[str]:
-    """从环境变量读取 WSL 侧环境脚本路径（WSL 路径）；未设置时尝试默认 ~/insar-wsl/env_isce2.sh。"""
-    v = (os.environ.get("INSAR_WSL_ENV_SCRIPT") or "").strip()
-    if v:
-        return v
-    return _get_wsl_default_env_script()
+    """
+    WSL 侧环境脚本（source 后含 conda isce2）。
+    优先工程内 scripts/wsl/env_isce2.sh（与代码同步），其次 INSAR_WSL_ENV_SCRIPT、~/insar-wsl。
+    """
+    load_wsl_config_env()
+    explicit = (os.environ.get("INSAR_WSL_ENV_SCRIPT") or "").strip()
+    proj = get_wsl_project_root()
+    if proj:
+        bundled = f"{proj.rstrip('/')}/scripts/wsl/env_isce2.sh"
+        if _wsl_env_script_exists(bundled):
+            if bundled != explicit:
+                logger.info("使用工程 WSL 环境脚本: %s", bundled)
+            return bundled
+    if explicit and _wsl_env_script_exists(explicit):
+        return explicit
+    home_script = _get_wsl_default_env_script()
+    if home_script and _wsl_env_script_exists(home_script):
+        return home_script
+    if explicit:
+        return explicit
+    return home_script
 
 
 def _resolve_windows_project_root_to_wsl() -> Optional[str]:

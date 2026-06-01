@@ -46,6 +46,8 @@ InsightInSAR/
 
 更多说明见：`docs/installation_and_deployment.md`、`docs/wsl_ubuntu24_isce2_setup.md`。
 
+教学视频解说词与 TTS 批量脚本见：`docs/video/README.md`（Cursor 技能：`insar-tutorial-video`）。
+
 ### 快速开始（开发环境）
 
 1. **环境要求**

@@ -1,3 +1,5 @@
 # Windows batch scripts must use CRLF for CMD to parse correctly
 *.bat text eol=crlf
 *.cmd text eol=crlf
+# Shell scripts for WSL/Linux must use LF
+*.sh text eol=lf

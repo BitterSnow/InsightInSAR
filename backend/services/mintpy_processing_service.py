@@ -200,10 +200,17 @@ def init_mintpy_workdir(
     except Exception:
         init_timeout = 60
 
-    # 先做一次快速探针：验证 WSL 可执行 + env_script source 是否会卡住。
-    # 若探针超时，基本可判定卡在 WSL/环境脚本层面，而非 MintPy 初始化本身。
+    # WSL 探针：验证 env_script source 不卡住（冷启动 + conda 可能 >20s）
     env_script = wsl_runner.get_wsl_env_script()
-    probe_timeout = min(20, init_timeout) if init_timeout is not None else 20
+    probe_timeout = 45
+    try:
+        v = (os.environ.get("INSAR_WSL_PROBE_TIMEOUT") or "").strip()
+        if v:
+            probe_timeout = max(15, int(v))
+        else:
+            probe_timeout = max(45, min(90, init_timeout))
+    except ValueError:
+        probe_timeout = 45
     logging.info("MintPy init: start probe timeout=%ss env_script=%s", probe_timeout, env_script)
     probe = wsl_runner.run_wsl(
         "echo __INSAR_WSL_PROBE_OK__",
@@ -218,9 +225,19 @@ def init_mintpy_workdir(
     )
     if not probe.get("success"):
         msg = (probe.get("error_message") or "WSL 探针失败").strip()
+        hint = ""
+        if env_script and "insar-wsl" in (env_script or ""):
+            proj = wsl_runner.get_wsl_project_root()
+            if proj:
+                hint = (
+                    f"\n建议改用工程内环境脚本（已自动优先）："
+                    f"{proj}/scripts/wsl/env_isce2.sh"
+                )
         return {
             "success": False,
-            "error_message": f"WSL 环境探针失败（可能卡在 env 脚本或 WSL 启动）。{msg}",
+            "error_message": (
+                f"WSL 环境探针失败（可能 WSL 未启动或 env 脚本过慢）。{msg}{hint}"
+            ),
         }
     logging.info("MintPy init: start init timeout=%ss work_dir=%s", init_timeout, work_dir_wsl)
     result = wsl_runner.run_wsl(
