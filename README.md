@@ -38,13 +38,13 @@ InsightInSAR/
 ├── packaging/            # Windows 打包与安装相关脚本与配置
 ├── build/                # 构建中间目录（可清理）
 ├── dist/                 # 打包产物（如安装包、可执行文件）
-├── manual/               # 操作说明书（PDF、HTML、截图）
+├── manual/               # 操作说明书（PDF）
 ├── logs/                 # 运行日志（本地调试与生产排障）
 ├── .venv/                # Python 虚拟环境（本地）
 └── README.md             # 当前文件
 ```
 
-安装与离线交付说明见：`packaging/README.md`。操作说明书见：`manual/README.md`。
+安装与离线交付说明见：`packaging/README.md`。操作说明书见：`manual/Insight_InSAR_Operation_Manual.pdf`。
 
 ### 快速开始（开发环境）
 
