@@ -87,6 +87,111 @@ STEP_NAMES_CN: Dict[str, str] = {
     "hdfeos5": "HDF-EOS5",
 }
 
+MINTPY_STATE_FILE = "mintpy_step_state.json"
+_STATUS_OK = frozenset({"success", "fail"})
+
+
+def _mintpy_state_path(work_dir: str) -> str:
+    return os.path.join(os.path.abspath(work_dir), MINTPY_STATE_FILE)
+
+
+def load_mintpy_step_state_file(work_dir: str) -> Dict[str, str]:
+    """读取 work_dir/mintpy_step_state.json（与 Stack 的 pipeline_state.json 对应）。"""
+    path = _mintpy_state_path(work_dir)
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        raw = data.get("steps") or {}
+        return {k: v for k, v in raw.items() if k and v in _STATUS_OK}
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {}
+
+
+def save_mintpy_step_state(work_dir: str, step_id: str, status: str) -> None:
+    """更新单步状态并写入 mintpy_step_state.json（WSL 步骤完成后也会调用）。"""
+    if not step_id or status not in _STATUS_OK:
+        return
+    states = load_mintpy_step_state_file(work_dir)
+    states[step_id] = status
+    save_mintpy_step_states_batch(work_dir, states)
+
+
+def save_mintpy_step_states_batch(work_dir: str, states: Dict[str, str]) -> None:
+    path = _mintpy_state_path(work_dir)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        clean = {k: v for k, v in states.items() if k and v in _STATUS_OK}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"steps": clean}, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        logging.warning("写入 %s 失败: %s", path, e)
+
+
+def _infer_mintpy_steps_from_log(work_dir: str) -> Dict[str, str]:
+    """从 mintpy_step.log 解析各步 Return code。"""
+    log_path = os.path.join(os.path.abspath(work_dir), "mintpy_step.log")
+    if not os.path.isfile(log_path):
+        return {}
+    try:
+        text = open(log_path, "r", encoding="utf-8", errors="replace").read()
+    except OSError:
+        return {}
+    states: Dict[str, str] = {}
+    block_re = re.compile(
+        r"\[([a-zA-Z0-9_]+)\]\s+start:.*?Return code:\s*(-?\d+)",
+        re.DOTALL,
+    )
+    for m in block_re.finditer(text):
+        sid, rc = m.group(1), int(m.group(2))
+        states[sid] = "success" if rc == 0 else "fail"
+    return states
+
+
+def _infer_mintpy_steps_from_artifacts(work_dir: str, step_ids: List[str]) -> Dict[str, str]:
+    """
+    根据典型输出文件推断已完成的步骤（用于无 state 文件或在外部跑完 MintPy 的情况）。
+    若存在 geo 产品，则默认 notebook 13 步均已完成。
+    """
+    wd = os.path.abspath(work_dir)
+    if not step_ids:
+        return {}
+
+    def _exists(rel: str) -> bool:
+        return os.path.isfile(os.path.join(wd, rel.replace("/", os.sep)))
+
+    last_idx = -1
+    checkpoints: List[tuple[str, List[str]]] = [
+        ("load_data", ["timeseries.h5"]),
+        ("invert_network", ["timeseries_demErr.h5", "timeseriesERA5.h5", "timeseries_SET.h5"]),
+        ("velocity", ["velocity.h5"]),
+        ("geocode", ["geo/geo_velocity.h5", "geo_velocity.h5"]),
+    ]
+    id_to_idx = {sid: i for i, sid in enumerate(step_ids)}
+    for step_id, rel_files in checkpoints:
+        if step_id not in id_to_idx:
+            continue
+        if any(_exists(r) for r in rel_files):
+            last_idx = max(last_idx, id_to_idx[step_id])
+
+    if last_idx < 0:
+        return {}
+    return {step_ids[i]: "success" for i in range(last_idx + 1)}
+
+
+def resolve_mintpy_step_states(work_dir: str, step_ids: Optional[List[str]] = None) -> Dict[str, str]:
+    """
+    合并：mintpy_step_state.json > mintpy_step.log > 输出文件推断。
+    供桌面重新打开流程界面时恢复步骤状态。
+    """
+    ids = list(step_ids or STEP_LIST_NOTEBOOK)
+    merged: Dict[str, str] = {}
+    merged.update(_infer_mintpy_steps_from_artifacts(work_dir, ids))
+    merged.update(_infer_mintpy_steps_from_log(work_dir))
+    merged.update(load_mintpy_step_state_file(work_dir))
+    return {k: v for k, v in merged.items() if k in ids and v in _STATUS_OK}
+
 
 def _find_stack_root(work_dir: str) -> Optional[str]:
     """
@@ -183,7 +288,25 @@ def init_mintpy_workdir(
 
     project_root = wsl_runner.get_wsl_project_root()
     if not project_root:
-        return {"success": False, "error_message": "WSL 模式下请设置 INSAR_WSL_PROJECT_ROOT"}
+        win = wsl_runner.resolve_windows_code_root()
+        return {
+            "success": False,
+            "error_message": (
+                "WSL 模式下未找到含 backend/ 的安装根目录。"
+                f" Windows 解析路径: {win or '未知'}。"
+                " 打包版请将 backend/、scripts/ 放在 InSAR Desktop 上一级，"
+                "并运行部署向导或检查 %LOCALAPPDATA%\\InSAR\\wsl_config.env 中的 INSAR_WSL_PROJECT_ROOT。"
+            ),
+        }
+    if not wsl_runner._wsl_backend_scripts_ready(project_root):
+        return {
+            "success": False,
+            "error_message": (
+                f"WSL 路径 {project_root} 下找不到 backend 模块。"
+                " 请确认安装根目录（非仅 exe 子目录）已包含 backend/scripts，"
+                "并重新运行「InSAR WSL 部署向导」写入 INSAR_WSL_PROJECT_ROOT。"
+            ),
+        }
     init_json = json.dumps({
         "work_dir": work_dir_wsl,
         "stack_work_dir": (stack_work_dir or "").rstrip("/") or None,
@@ -562,12 +685,14 @@ def run_mintpy_step(
     project_root = wsl_runner.get_wsl_project_root()
     if not project_root:
         return {"success": False, "error_message": "WSL 模式下请设置 INSAR_WSL_PROJECT_ROOT", "step_id": step_id}
-    # MintPy source path inside WSL (prefer env override)
+    # MintPy：优先 INSAR_WSL_MINTPY_SRC；未设置则依赖 WSL conda 内已安装的 mintpy（不复制 lib/）
     mintpy_src = (os.environ.get("INSAR_WSL_MINTPY_SRC") or "").strip()
-    if not mintpy_src:
-        mintpy_src = f"{project_root.rstrip('/')}/lib/MintPy-main/src"
+    if mintpy_src:
+        py_prefix = f'PYTHONPATH="{mintpy_src}:.:${{PYTHONPATH:-}}"'
+    else:
+        py_prefix = 'PYTHONPATH=".:${PYTHONPATH:-}"'
     cmd = (
-        f"cd '{project_root}' && PYTHONPATH=\"{mintpy_src}:.:${{PYTHONPATH:-}}\" python3 -m backend.scripts.run_mintpy_wsl step"
+        f"cd '{project_root}' && {py_prefix} python3 -m backend.scripts.run_mintpy_wsl step"
         f" --work_dir='{work_dir_wsl}' --step_id='{step_id}'"
     )
     env_script = wsl_runner.get_wsl_env_script()
@@ -595,14 +720,23 @@ def run_mintpy_step(
     )
     if progress_callback:
         progress_callback(100.0, f"步骤 {step_id} 完成")
-    log_path_win = os.path.join(work_dir_win, "mintpy_step.log") if work_dir_win and ("\\" in work_dir_win or (len(work_dir_win) >= 2 and work_dir_win[1] == ":")) else (work_dir_wsl + "/mintpy_step.log")
     if result.get("success"):
+        try:
+            save_mintpy_step_state(work_dir_win, step_id, "success")
+        except Exception:
+            logging.debug("mintpy step state save skipped", exc_info=True)
         return {"success": True, "step_id": step_id}
+    try:
+        save_mintpy_step_state(work_dir_win, step_id, "fail")
+    except Exception:
+        logging.debug("mintpy step state save skipped", exc_info=True)
     return {
         "success": False,
         "error_message": result.get("error_message", "WSL 执行失败"),
         "step_id": step_id,
-        "log_file": log_path_win,
+        "log_file": os.path.join(work_dir_win, "mintpy_step.log")
+        if work_dir_win and ("\\" in work_dir_win or (len(work_dir_win) >= 2 and work_dir_win[1] == ":"))
+        else (work_dir_wsl + "/mintpy_step.log"),
     }
 
 

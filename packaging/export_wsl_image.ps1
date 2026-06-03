@@ -57,7 +57,19 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "[OK] WSL 环境就绪"
 }
 
-# 5. 导出
+# 5. 导出前脱敏（移除 CDS/ERA5 凭据与缓存，避免打入客户镜像）
+Write-Host ""
+Write-Host "导出前脱敏（CDS/ERA5）..." -ForegroundColor Yellow
+$Py = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path $Py)) { $Py = "python" }
+& $Py -m packaging.wsl_sanitize --distro $Distro
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] WSL 脱敏失败，已中止导出。若仅内部使用可加 -KeepSecrets。" -ForegroundColor Red
+    exit 1
+}
+Write-Host "[OK] 脱敏完成"
+
+# 6. 导出
 if (-not (Test-Path $DistDir)) { New-Item -ItemType Directory -Path $DistDir -Force | Out-Null }
 if (Test-Path $OutTar) {
     if (-not $Force) {

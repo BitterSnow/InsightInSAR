@@ -26,12 +26,21 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [2/2] Build Desktop to dist\InSAR Desktop\
-cd "%ROOT%\.venv"
-.\Scripts\python.exe -m PyInstaller --noconfirm --distpath="%ROOT%\dist" --workpath="%ROOT%\build" "%ROOT%\packaging\insar_desktop.spec"
-cd "%ROOT%"
+echo [2/3] Build Desktop to dist\InSAR Desktop\
+if not exist "%ROOT%\build" mkdir "%ROOT%\build"
+cd /d "%ROOT%\build"
+"%PY%" -m PyInstaller --noconfirm --distpath="%ROOT%\dist" --workpath="%ROOT%\build" "%ROOT%\packaging\insar_desktop.spec"
+cd /d "%ROOT%"
 if errorlevel 1 (
   echo [ERROR] Desktop build failed
+  pause
+  exit /b 1
+)
+
+echo [3/3] Stage backend/scripts/lib into dist\InSAR Desktop\ ...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\packaging\stage_desktop_delivery.ps1"
+if errorlevel 1 (
+  echo [ERROR] stage_desktop_delivery failed
   pause
   exit /b 1
 )

@@ -285,37 +285,41 @@ class MintPyFlowWidget(QWidget):
         self._update_log_path_label()
 
     def _load_step_state(self) -> None:
-        """从 work_dir/mintpy_step_state.json 合并步骤状态。"""
-        path = os.path.join(self._work_dir, MINTPY_STATE_FILE)
-        if not os.path.isfile(path):
-            return
+        """从 mintpy_step_state.json / 日志 / 输出文件恢复步骤状态。"""
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            states = data.get("steps") or {}
-            for i, step in enumerate(self._steps):
-                step_id = step.get("id", "")
-                if step_id and states.get(step_id) in (STATUS_SUCCESS, STATUS_FAIL):
-                    self._step_status[i] = states[step_id]
+            from backend.services.mintpy_processing_service import resolve_mintpy_step_states
+
+            step_ids = [s.get("id", "") for s in self._steps]
+            states = resolve_mintpy_step_states(self._work_dir, step_ids)
         except Exception:
-            pass
+            states = {}
+        for i, step in enumerate(self._steps):
+            step_id = step.get("id", "")
+            if step_id and states.get(step_id) in (STATUS_SUCCESS, STATUS_FAIL):
+                self._step_status[i] = states[step_id]
 
     def _save_step_state(self) -> None:
         """将当前步骤状态写入 work_dir/mintpy_step_state.json。"""
-        path = os.path.join(self._work_dir, MINTPY_STATE_FILE)
         try:
+            from backend.services.mintpy_processing_service import save_mintpy_step_states_batch
+
             states = {}
             for i, step in enumerate(self._steps):
                 if i < len(self._step_status):
                     states[step.get("id", "")] = self._step_status[i]
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump({"steps": states}, f, ensure_ascii=False, indent=2)
+            save_mintpy_step_states_batch(self._work_dir, states)
         except Exception:
             pass
 
     def _update_log_path_label(self) -> None:
-        self._log_path_label.setText(f"工作目录: {self._work_dir}")
-        self._log_path_label.setToolTip(self._work_dir)
+        state_path = os.path.join(self._work_dir, MINTPY_STATE_FILE)
+        hint = ""
+        if os.path.isfile(state_path):
+            hint = f" | 状态文件: {MINTPY_STATE_FILE}"
+        self._log_path_label.setText(f"工作目录: {self._work_dir}{hint}")
+        self._log_path_label.setToolTip(
+            f"{self._work_dir}\n状态: {state_path}\n（与 Stack 的 pipeline_state.json 类似，文件名为 mintpy_step_state.json）"
+        )
 
     @Slot()
     def _on_open_log_dir(self) -> None:

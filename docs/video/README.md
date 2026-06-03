@@ -29,23 +29,25 @@ Agent 会读取 `README.md`、`packaging/README.md` 等，并写入本目录。
 
 | 目录 | 音色 | 说明 |
 |------|------|------|
+| `audio-optimized/` | 云希 `zh-CN-YunxiNeural`（男） | 新版实操干货稿：全文 + 分章 + 三段，推荐使用 |
 | `audio/` | 晓晓 `zh-CN-XiaoxiaoNeural`（女） | 全文 + 分段 + 三幕 |
 | `audio-male/` | 云希 `zh-CN-YunxiNeural`（男） | 同上结构，推荐教学片头 |
 
-男声全文：`audio-male/narration-full.mp3`。三幕剪辑用 `part1-` / `part2-` / `part3-` 前缀文件。
+新版男声全文：`audio-optimized/narration-full.mp3`。分章剪辑用 `full-01-` 到 `full-06-` 文件；三段剪辑用 `part1-` / `part2-` / `part3-` 前缀文件。
 
 ## 批量生成配音（Edge TTS）
 
 ```powershell
 cd D:\coding\insar-system
 pip install -r scripts/video/requirements-video.txt
-python scripts/video/tts_batch.py docs/video/narration-full.md
+python scripts/video/tts_batch.py docs/video/narration-full.md -o docs/video/audio-optimized --voice zh-CN-YunxiNeural
 ```
 
 可选参数：
 
 ```powershell
 python scripts/video/tts_batch.py docs/video/narration-full.md --voice zh-CN-XiaoxiaoNeural --rate +0%
+python scripts/video/tts_batch.py docs/video/narration-full.md --split-by-heading --prefix full- -o docs/video/audio-optimized --voice zh-CN-YunxiNeural
 python scripts/video/tts_batch.py docs/video/narration-part2-install.md -o docs/video/audio
 ```
 
@@ -58,7 +60,7 @@ python scripts/video/tts_batch.py --list-voices
 ## 人工后续步骤（Cursor 外）
 
 1. 按 `shot-list.md` 用 OBS 等录屏  
-2. 用剪映 / CapCut / Premiere 对齐 `audio/` 与画面  
+2. 用剪映 / CapCut / Premiere 对齐 `audio-optimized/` 与画面  
 3. 字幕可用剪映识别或 Whisper，再与 `narration-full.md` 校对  
 
 ## 忽略大文件（可选）

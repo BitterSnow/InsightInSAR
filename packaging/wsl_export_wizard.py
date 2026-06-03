@@ -100,13 +100,28 @@ def list_wsl_distros() -> tuple[bool, list[str], str]:
         return False, [], str(e)
 
 
-def run_export(distro: str, tar_path: str) -> tuple[bool, str]:
+def run_export(
+    distro: str,
+    tar_path: str,
+    *,
+    keep_secrets: bool = False,
+) -> tuple[bool, str]:
     target = Path(tar_path).resolve()
     if not distro.strip():
         return False, "发行版名称不能为空。"
     if target.suffix.lower() != ".tar":
         return False, "导出文件必须是 .tar。"
     target.parent.mkdir(parents=True, exist_ok=True)
+    from packaging.wsl_sanitize import run_wsl_sanitize_before_export
+
+    ok_san, msg_san = run_wsl_sanitize_before_export(
+        distro,
+        keep_secrets=keep_secrets,
+        decode=_decode_subprocess_output,
+        creationflags=_subprocess_creationflags(),
+    )
+    if not ok_san:
+        return False, f"导出前脱敏失败：{msg_san}"
     try:
         r = subprocess.run(
             ["wsl", "--export", distro, str(target)],
@@ -119,7 +134,10 @@ def run_export(distro: str, tar_path: str) -> tuple[bool, str]:
             return False, err
         if not target.is_file():
             return False, "导出命令执行成功，但未检测到目标文件。"
-        return True, f"导出成功：{target}"
+        tail = f"导出成功：{target}"
+        if not keep_secrets:
+            tail = f"{msg_san}\n{tail}"
+        return True, tail
     except subprocess.TimeoutExpired:
         return False, "导出超时（超过 60 分钟）。"
     except Exception as e:
@@ -141,6 +159,7 @@ def main_ui(app_root: Path) -> None:
         QProgressBar,
         QPushButton,
         QComboBox,
+        QCheckBox,
         QVBoxLayout,
         QWidget,
     )
@@ -148,13 +167,16 @@ def main_ui(app_root: Path) -> None:
     class ExportWorker(QThread):
         finished_signal = Signal(bool, str)
 
-        def __init__(self, distro: str, tar_path: str):
+        def __init__(self, distro: str, tar_path: str, keep_secrets: bool):
             super().__init__()
             self.distro = distro
             self.tar_path = tar_path
+            self.keep_secrets = keep_secrets
 
         def run(self) -> None:
-            ok, msg = run_export(self.distro, self.tar_path)
+            ok, msg = run_export(
+                self.distro, self.tar_path, keep_secrets=self.keep_secrets
+            )
             self.finished_signal.emit(ok, msg)
 
     app = QApplication(sys.argv)
@@ -211,6 +233,17 @@ def main_ui(app_root: Path) -> None:
     ly2.addWidget(browse_tar)
     layout.addWidget(grp2)
 
+    keep_secrets_cb = QCheckBox("保留开发机 CDS/ERA5 凭据（仅内部构建，勿用于客户发布）")
+    keep_secrets_cb.setChecked(False)
+    layout.addWidget(keep_secrets_cb)
+
+    sanitize_hint = QLabel(
+        "发布给客户前请勿勾选上一项。导出前将自动删除 WSL 内 ~/.cdsapirc、"
+        "环境脚本中的 WEATHER_DIR/CDS 变量及常见 ERA5 缓存目录。"
+    )
+    sanitize_hint.setWordWrap(True)
+    layout.addWidget(sanitize_hint)
+
     progress = QProgressBar()
     progress.setVisible(False)
     layout.addWidget(progress)
@@ -263,8 +296,8 @@ def main_ui(app_root: Path) -> None:
         btn_export.setEnabled(False)
         progress.setVisible(True)
         progress.setRange(0, 0)
-        status.setText("正在导出 WSL 镜像（可能需要数分钟，请勿关闭窗口）…")
-        worker = ExportWorker(distro, tar_path)
+        status.setText("正在脱敏并导出 WSL 镜像（可能需要数分钟，请勿关闭窗口）…")
+        worker = ExportWorker(distro, tar_path, keep_secrets_cb.isChecked())
         worker.finished_signal.connect(on_export_finished)
         win._export_worker = worker
         worker.start()

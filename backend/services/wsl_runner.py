@@ -15,6 +15,46 @@ from typing import Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+_wsl_config_env_loaded = False
+_wsl_distro_resolved: Optional[str] = None
+_wsl_distro_lookup_done = False
+_wsl_project_root_cache: Optional[str] = None
+_wsl_project_root_cache_valid = False
+
+
+def _win_hide_subprocess_kwargs() -> dict:
+    """Windows 下隐藏 wsl.exe 等子进程的控制台窗口（避免 Desktop 启动闪黑窗）。"""
+    kw: dict = {}
+    if os.name != "nt":
+        return kw
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+    if hasattr(subprocess, "STARTUPINFO"):
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 1)
+        si.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+        kw["startupinfo"] = si
+    return kw
+
+
+def _run_subprocess(argv, **kwargs) -> subprocess.CompletedProcess:
+    """subprocess.run 封装：默认隐藏控制台，权限被拒时去掉隐藏标志重试一次。"""
+    run_kw = {
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        **_win_hide_subprocess_kwargs(),
+        **kwargs,
+    }
+    try:
+        return subprocess.run(argv, **run_kw)
+    except (OSError, PermissionError):
+        run_kw.pop("creationflags", None)
+        run_kw.pop("startupinfo", None)
+        return subprocess.run(argv, **run_kw)
+
+
 # Windows 上优先使用 System32 下 wsl.exe 的完整路径，避免 PATH 受限或策略拦截导致权限错误
 def _wsl_executable() -> str:
     if os.name != "nt":
@@ -70,14 +110,7 @@ def _wslpath_absolute(windows_path: str) -> Optional[str]:
         argv.extend(["-d", wsl_distro])
     argv.extend(["-e", "wslpath", "-a", win_path])
     try:
-        r = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            encoding="utf-8",
-            errors="replace",
-        )
+        r = _run_subprocess(argv, timeout=15)
         if r.returncode == 0 and (r.stdout or "").strip():
             return (r.stdout or "").strip()
     except Exception:
@@ -94,14 +127,7 @@ def _wsl_test_dir_exists(wsl_path: str) -> bool:
         argv.extend(["-d", distro])
     argv.extend(["-e", "bash", "-c", bash_cmd])
     try:
-        r = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            encoding="utf-8",
-            errors="replace",
-        )
+        r = _run_subprocess(argv, timeout=15)
         return r.returncode == 0
     except Exception:
         return False
@@ -119,14 +145,7 @@ def _wsl_is_drvfs_mounted(mount_point: str) -> bool:
         argv.extend(["-d", distro])
     argv.extend(["-e", "bash", "-c", bash_cmd])
     try:
-        r = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            encoding="utf-8",
-            errors="replace",
-        )
+        r = _run_subprocess(argv, timeout=15)
         return r.returncode == 0
     except Exception:
         return False
@@ -212,14 +231,7 @@ def _wsl_mounted_drive_letters() -> List[str]:
         argv.extend(["-d", distro])
     argv.extend(["-e", "bash", "-c", "ls -1 /mnt 2>/dev/null || true"])
     try:
-        r = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            encoding="utf-8",
-            errors="replace",
-        )
+        r = _run_subprocess(argv, timeout=10)
         if r.returncode != 0:
             return []
         letters = [
@@ -294,7 +306,75 @@ def wsl_path_to_windows(wsl_path: str) -> str:
     return f"{drive}:\\{rest}" if rest else f"{drive}:\\"
 
 
-_wsl_config_env_loaded = False
+_wsl_cds_sync_done = False
+
+
+def _prepare_wsl_extra_env(extra_env: Optional[Dict[str, str]]) -> Dict[str, str]:
+    """合并 WEATHER_DIR、WSL 工程路径，并在首次 WSL 调用时将本机 CDS 配置同步到 ~/.cdsapirc。"""
+    global _wsl_cds_sync_done
+    out: Dict[str, str] = dict(extra_env or {})
+    load_wsl_config_env()
+    project_root = get_wsl_project_root()
+    if project_root:
+        out.setdefault("INSAR_PROJECT_ROOT", project_root)
+        out.setdefault("PYTHONPATH", ".")
+    wdir = (os.environ.get("WEATHER_DIR") or "").strip()
+    if wdir and "WEATHER_DIR" not in out:
+        out["WEATHER_DIR"] = wdir
+    if os.name == "nt" and use_wsl() and not _wsl_cds_sync_done:
+        _wsl_cds_sync_done = True
+        distro = get_wsl_distro()
+        if distro:
+            try:
+                from cds_wsl_bridge import sync_cdsapirc_from_windows_to_wsl
+
+                ok, msg = sync_cdsapirc_from_windows_to_wsl(distro)
+                if ok and msg and "未配置" not in msg:
+                    logger.info("CDS: %s", msg)
+            except Exception as exc:
+                logger.debug("CDS 同步到 WSL 跳过: %s", exc)
+    return out
+
+
+def iter_wsl_config_env_candidates(project_root: Optional[str] = None) -> List[str]:
+    """
+    wsl_config.env 查找路径（与 desktop.main._get_wsl_config_candidates 一致）。
+    """
+    candidates: List[str] = []
+    local = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or ""
+    if local:
+        candidates.append(os.path.join(local, "InSAR", "wsl_config.env"))
+    roots: List[str] = []
+    for raw in (
+        project_root,
+        os.environ.get("INSAR_CODE_ROOT"),
+        os.environ.get("INSAR_PROJECT_ROOT"),
+    ):
+        r = (raw or "").strip()
+        if r and r not in roots:
+            roots.append(r)
+    for root in roots:
+        try:
+            base = os.path.abspath(root)
+        except OSError:
+            base = root
+        candidates.append(os.path.join(base, "wsl_config.env"))
+        parent = os.path.dirname(base)
+        if parent:
+            candidates.append(os.path.join(parent, "wsl_config.env"))
+            candidates.append(
+                os.path.join(parent, "InSAR WSL Deploy Wizard", "wsl_config.env")
+            )
+            candidates.append(
+                os.path.join(parent, "InSAR WSL 部署向导", "wsl_config.env")
+            )
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for p in candidates:
+        if p and p not in seen:
+            seen.add(p)
+            ordered.append(p)
+    return ordered
 
 
 def load_wsl_config_env(project_root: Optional[str] = None) -> None:
@@ -306,14 +386,7 @@ def load_wsl_config_env(project_root: Optional[str] = None) -> None:
     if _wsl_config_env_loaded:
         return
     _wsl_config_env_loaded = True
-    candidates: List[str] = []
-    local = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or ""
-    if local:
-        candidates.append(os.path.join(local, "InSAR", "wsl_config.env"))
-    root = (project_root or os.environ.get("INSAR_PROJECT_ROOT") or "").strip()
-    if root:
-        candidates.append(os.path.join(root, "wsl_config.env"))
-    for cfg in candidates:
+    for cfg in iter_wsl_config_env_candidates(project_root):
         if not os.path.isfile(cfg):
             continue
         try:
@@ -335,14 +408,7 @@ def load_wsl_config_env(project_root: Optional[str] = None) -> None:
 def list_wsl_distros() -> List[str]:
     """列出本机已安装的 WSL 发行版名称。"""
     try:
-        r = subprocess.run(
-            [_wsl_executable(), "-l", "-q"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            encoding="utf-8",
-            errors="replace",
-        )
+        r = _run_subprocess([_wsl_executable(), "-l", "-q"], timeout=15)
         text = (r.stdout or r.stderr or "").replace("\x00", "")
         return [ln.strip() for ln in text.splitlines() if ln.strip()]
     except Exception:
@@ -354,16 +420,24 @@ def get_wsl_distro() -> Optional[str]:
     返回 WSL 发行版名称。优先 INSAR_WSL_DISTRO（含 wsl_config.env）；
     未配置时默认 Ubuntu（与本项目 Stack/DEM 约定一致）。
     """
+    global _wsl_distro_resolved, _wsl_distro_lookup_done
+    if _wsl_distro_lookup_done:
+        return _wsl_distro_resolved
+    _wsl_distro_lookup_done = True
     load_wsl_config_env()
     v = (os.environ.get("INSAR_WSL_DISTRO") or "").strip()
     if v.lower() == "default":
+        _wsl_distro_resolved = None
         return None
     if v:
+        _wsl_distro_resolved = v
         return v
     installed = {d.lower(): d for d in list_wsl_distros()}
     if "ubuntu" in installed:
-        return installed["ubuntu"]
-    return next(iter(installed.values()), "Ubuntu")
+        _wsl_distro_resolved = installed["ubuntu"]
+    else:
+        _wsl_distro_resolved = next(iter(installed.values()), "Ubuntu")
+    return _wsl_distro_resolved
 
 
 def ensure_drvfs_drive_mounted(drive_letter: str) -> bool:
@@ -391,14 +465,7 @@ def ensure_drvfs_drive_mounted(drive_letter: str) -> bool:
         argv.extend(["-d", distro])
     argv.extend(["-e", "bash", "-c", bash_cmd])
     try:
-        subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            encoding="utf-8",
-            errors="replace",
-        )
+        _run_subprocess(argv, timeout=30)
     except Exception as exc:
         logger.debug("drvfs 挂载 %s: 失败: %s", drive_upper, exc)
     ok = _wsl_is_drvfs_mounted(mount_point)
@@ -494,6 +561,7 @@ def run_wsl(
     wsl_distro = get_wsl_distro()
     if wsl_distro:
         wsl_distro = _sanitize_string(wsl_distro)
+    extra_env = _prepare_wsl_extra_env(extra_env)
     argv = build_wsl_argv(bash_cmd, wsl_distro=wsl_distro, env_script=env_script, extra_env=extra_env)
 
     # 最终清理：确保 argv 中每个元素都不包含空字节
@@ -522,17 +590,14 @@ def run_wsl(
                 encoding="utf-8",
                 errors="replace",
             )
-            if hasattr(subprocess, "CREATE_NO_WINDOW") and os.name == "nt":
-                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            kwargs.update(_win_hide_subprocess_kwargs())
             try:
                 proc = subprocess.Popen(argv, **kwargs)
             except (OSError, PermissionError):
                 # 部分环境（杀毒/组策略）会拦截带 CREATE_NO_WINDOW 的子进程，去掉该标志重试一次
-                if "creationflags" in kwargs:
-                    del kwargs["creationflags"]
-                    proc = subprocess.Popen(argv, **kwargs)
-                else:
-                    raise
+                kwargs.pop("creationflags", None)
+                kwargs.pop("startupinfo", None)
+                proc = subprocess.Popen(argv, **kwargs)
             lines: List[str] = []
             last_output_time: List[float] = [time.monotonic()]
 
@@ -605,16 +670,13 @@ def run_wsl(
                 errors="replace",
                 timeout=timeout,
             )
-            if hasattr(subprocess, "CREATE_NO_WINDOW") and os.name == "nt":
-                kwargs_run["creationflags"] = subprocess.CREATE_NO_WINDOW
+            kwargs_run.update(_win_hide_subprocess_kwargs())
             try:
                 result = subprocess.run(argv, **kwargs_run)
             except (OSError, PermissionError):
-                if "creationflags" in kwargs_run:
-                    del kwargs_run["creationflags"]
-                    result = subprocess.run(argv, **kwargs_run)
-                else:
-                    raise
+                kwargs_run.pop("creationflags", None)
+                kwargs_run.pop("startupinfo", None)
+                result = subprocess.run(argv, **kwargs_run)
             return {
                 "success": result.returncode == 0,
                 "returncode": result.returncode,
@@ -706,14 +768,7 @@ def _get_wsl_default_env_script() -> Optional[str]:
             "-e", "bash", "-c",
             '[ -f "$HOME/insar-wsl/env_isce2.sh" ] && echo "$HOME/insar-wsl/env_isce2.sh"',
         ])
-        r = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            encoding="utf-8",
-            errors="replace",
-        )
+        r = _run_subprocess(argv, timeout=10)
         path = (r.stdout or "").strip()
         return path if path else None
     except Exception:
@@ -737,10 +792,7 @@ def _wsl_env_script_exists(env_script: str) -> bool:
         argv.extend(["-d", distro])
     argv.extend(["-e", "bash", "-c", bash_cmd])
     try:
-        r = subprocess.run(
-            argv, capture_output=True, text=True, timeout=15,
-            encoding="utf-8", errors="replace",
-        )
+        r = _run_subprocess(argv, timeout=15)
         return r.returncode == 0
     except Exception:
         return False
@@ -782,14 +834,7 @@ def _resolve_windows_project_root_to_wsl() -> Optional[str]:
         argv.extend(["-d", wsl_distro])
     argv.extend(["-e", "wslpath", "-a", win_path])
     try:
-        r = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            encoding="utf-8",
-            errors="replace",
-        )
+        r = _run_subprocess(argv, timeout=10)
         if r.returncode == 0 and (r.stdout or "").strip():
             return (r.stdout or "").strip()
     except Exception:
@@ -798,15 +843,61 @@ def _resolve_windows_project_root_to_wsl() -> Optional[str]:
     return windows_path_to_wsl(win_root)
 
 
-def get_wsl_project_root() -> Optional[str]:
+def is_wsl_project_configured() -> bool:
     """
-    返回 WSL 侧项目代码根路径（用于 cd 和 dem.py 等）。
-    优先用 INSAR_WSL_PROJECT_ROOT；未设置时用 wslpath 将 INSAR_PROJECT_ROOT（Windows）转为 WSL 路径。
+    是否已完成 WSL 部署配置（仅读本机 wsl_config / 环境变量，不启动 wsl.exe）。
+    供 Desktop 启动时判断是否弹出部署向导。
     """
-    wsl_root = (os.environ.get("INSAR_WSL_PROJECT_ROOT") or "").strip()
-    if wsl_root:
-        return wsl_root
-    return _resolve_windows_project_root_to_wsl()
+    load_wsl_config_env()
+    for key in (
+        "INSAR_WSL_PROJECT_ROOT",
+        "INSAR_WSL_DISTRO",
+        "INSAR_WSL_ENV_SCRIPT",
+    ):
+        if (os.environ.get(key) or "").strip():
+            return True
+    for cfg in iter_wsl_config_env_candidates():
+        if os.path.isfile(cfg):
+            return True
+    marker = os.path.join("backend", "scripts", "run_mintpy_init_wsl.py")
+    win_root = resolve_windows_code_root()
+    if win_root and os.path.isfile(os.path.join(win_root, marker)):
+        return True
+    return False
+
+
+def get_wsl_project_root(force_refresh: bool = False) -> Optional[str]:
+    """
+    返回 WSL 侧项目代码根路径（用于 cd 和 python -m backend.scripts.*）。
+    优先 INSAR_WSL_PROJECT_ROOT（且 WSL 内存在 backend/scripts）；
+    否则从 Windows 安装根（含打包版上一级 backend/）推导。
+    """
+    global _wsl_project_root_cache, _wsl_project_root_cache_valid
+    if _wsl_project_root_cache_valid and not force_refresh:
+        return _wsl_project_root_cache
+
+    explicit = (os.environ.get("INSAR_WSL_PROJECT_ROOT") or "").strip().rstrip("/")
+    root: Optional[str] = None
+    if explicit and _wsl_backend_scripts_ready(explicit):
+        root = explicit
+    else:
+        resolved = _windows_code_root_to_wsl()
+        if resolved:
+            if explicit and explicit != resolved:
+                logger.warning(
+                    "INSAR_WSL_PROJECT_ROOT=%s 在 WSL 中无 backend，改用安装根 %s",
+                    explicit,
+                    resolved,
+                )
+            root = resolved
+        elif explicit:
+            root = explicit
+        else:
+            root = _resolve_windows_project_root_to_wsl()
+
+    _wsl_project_root_cache_valid = True
+    _wsl_project_root_cache = root
+    return root
 
 
 def _read_isce2_main_from_libpath_doc(project_root: str) -> Optional[str]:
@@ -928,6 +1019,62 @@ def get_tops_stack_dir_for_root(project_root: str) -> Optional[str]:
     return _tops_stack_from_conda_prefix()
 
 
+def resolve_windows_code_root(preferred: Optional[str] = None) -> Optional[str]:
+    """
+    解析含 backend/scripts 的 Windows 安装根（打包版 exe 在 InSAR Desktop/ 子目录时取上一级）。
+    供 WSL 执行 python3 -m backend.scripts.* 使用。
+    """
+    marker = os.path.join("backend", "scripts", "run_mintpy_init_wsl.py")
+    candidates: List[str] = []
+    if preferred and str(preferred).strip():
+        candidates.append(str(preferred).strip())
+    wsl_cfg = (os.environ.get("INSAR_WSL_PROJECT_ROOT") or "").strip()
+    if wsl_cfg.startswith("/mnt/"):
+        candidates.append(wsl_path_to_windows(wsl_cfg))
+    for key in ("INSAR_CODE_ROOT", "INSAR_PROJECT_ROOT"):
+        v = (os.environ.get(key) or "").strip()
+        if v:
+            candidates.append(v)
+
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for raw in candidates:
+        if not raw:
+            continue
+        try:
+            base = os.path.abspath(raw)
+        except OSError:
+            base = raw
+        for check in (base, os.path.dirname(base)):
+            if not check or check in seen:
+                continue
+            seen.add(check)
+            ordered.append(check)
+
+    for root in ordered:
+        if os.path.isfile(os.path.join(root, marker)):
+            return root
+    return ordered[0] if ordered else None
+
+
+def _wsl_backend_scripts_ready(wsl_root: str) -> bool:
+    if not wsl_root:
+        return False
+    marker = f"{wsl_root.rstrip('/')}/backend/scripts/run_mintpy_init_wsl.py"
+    return _wsl_test_file_exists(marker)
+
+
+def _windows_code_root_to_wsl() -> Optional[str]:
+    win_root = resolve_windows_code_root()
+    if not win_root:
+        return None
+    wsl_path = _wslpath_absolute(win_root) or windows_path_to_wsl(win_root)
+    wsl_path = (wsl_path or "").strip().rstrip("/")
+    if wsl_path and _wsl_backend_scripts_ready(wsl_path):
+        return wsl_path
+    return None
+
+
 def _wsl_test_file_exists(wsl_path: str) -> bool:
     """在 WSL 内检查文件是否存在。"""
     safe = wsl_path.replace("'", "'\"'\"'")
@@ -938,14 +1085,7 @@ def _wsl_test_file_exists(wsl_path: str) -> bool:
         argv.extend(["-d", distro])
     argv.extend(["-e", "bash", "-c", bash_cmd])
     try:
-        r = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            encoding="utf-8",
-            errors="replace",
-        )
+        r = _run_subprocess(argv, timeout=15)
         return r.returncode == 0
     except Exception:
         return False
@@ -978,14 +1118,7 @@ def _run_conda_python_in_wsl(py_snippet: str, env_script: Optional[str] = None) 
         argv.extend(["-d", distro])
     argv.extend(["-e", "bash", "-c", inner])
     try:
-        r = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            encoding="utf-8",
-            errors="replace",
-        )
+        r = _run_subprocess(argv, timeout=30)
         out = (r.stdout or "").strip().splitlines()
         if out and out[-1].strip():
             return out[-1].strip().rstrip("/")
@@ -1123,14 +1256,7 @@ def check_wsl_project_root() -> Dict[str, object]:
     )
     argv.extend(["-e", "bash", "-c", bash_cmd])
     try:
-        r = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            encoding="utf-8",
-            errors="replace",
-        )
+        r = _run_subprocess(argv, timeout=15)
         out = (r.stdout or "").strip()
         err = (r.stderr or "").strip()
         if r.returncode != 0 or out != "OK":

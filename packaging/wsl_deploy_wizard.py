@@ -36,6 +36,14 @@ def _get_app_root(parsed_app_root: str | None) -> Path:
     return _REPO_ROOT
 
 
+def _code_install_root(app_root: Path) -> Path:
+    """WSL 代码根：优先 exe 同目录（交付版 backend 在 InSAR Desktop 内），否则上一级。"""
+    marker = app_root / "backend" / "scripts" / "run_mintpy_init_wsl.py"
+    if marker.is_file():
+        return app_root
+    return app_root.parent
+
+
 def _subprocess_creationflags() -> int:
     """Windows 下隐藏子进程控制台窗口，避免黑色 wsl 窗口无内容。"""
     if sys.platform == "win32":
@@ -283,13 +291,21 @@ def get_wsl_path_from_windows(windows_path: str) -> tuple[bool, str]:
         return False, ""
 
 
-def write_wsl_config(app_root: Path, distro: str, env_script: str, project_root_wsl: str) -> None:
+def write_wsl_config(
+    app_root: Path,
+    distro: str,
+    env_script: str,
+    project_root_wsl: str,
+    weather_dir_wsl: str = "",
+) -> None:
     """写入 wsl_config.env：同时写入固定用户路径（与 exe 位置无关）和应用根目录（兼容旧版）。"""
     lines = [
         f"INSAR_WSL_DISTRO={distro}",
         f"INSAR_WSL_ENV_SCRIPT={env_script}",
         f"INSAR_WSL_PROJECT_ROOT={project_root_wsl}",
     ]
+    if (weather_dir_wsl or "").strip():
+        lines.append(f"WEATHER_DIR={weather_dir_wsl.strip()}")
     content = "\n".join(lines) + "\n"
     # 1) 固定用户路径：Desktop 任意移动后仍能从此处读取
     try:
@@ -301,6 +317,100 @@ def write_wsl_config(app_root: Path, distro: str, env_script: str, project_root_
         pass
     # 2) 应用根目录（兼容旧部署与同目录使用）
     (app_root / "wsl_config.env").write_text(content, encoding="utf-8")
+
+
+def _resolve_weather_dir_wsl(distro: str, weather_win: str) -> str:
+    """将 Windows 气象目录转为 WSL 路径。"""
+    if not weather_win.strip():
+        return ""
+    ok, wsl_path = get_wsl_path_from_windows(weather_win)
+    if ok and wsl_path:
+        return wsl_path
+    try:
+        r = subprocess.run(
+            ["wsl", "-d", distro, "-e", "wslpath", "-a", weather_win.replace("\\", "/")],
+            capture_output=True,
+            timeout=20,
+            creationflags=_subprocess_creationflags(),
+        )
+        if r.returncode == 0 and (r.stdout or b"").strip():
+            return _decode_subprocess_output(r.stdout)
+    except Exception:
+        pass
+    return ""
+
+
+def finish_deploy_configuration(
+    app_root: Path,
+    env_script: str,
+    project_root_wsl: str,
+    *,
+    cds_api_key: str = "",
+    skip_cds: bool = False,
+) -> tuple[bool, str]:
+    """
+    导入后写入 wsl_config、CDS（Windows + WSL）、气象缓存目录。
+    返回 (成功, 给用户看的摘要信息)。
+    """
+    from packaging.wsl_sanitize import ensure_weather_dir_windows, push_cdsapirc_to_wsl
+    from wsl_config_path import write_cdsapirc_windows
+
+    notes: list[str] = []
+    weather_win = ensure_weather_dir_windows() or ""
+    weather_wsl = _resolve_weather_dir_wsl(WSL_DISTRO_NAME, weather_win) if weather_win else ""
+
+    write_wsl_config(
+        app_root,
+        WSL_DISTRO_NAME,
+        env_script,
+        project_root_wsl,
+        weather_dir_wsl=weather_wsl,
+    )
+    notes.append("已写入 wsl_config.env")
+
+    if skip_cds:
+        notes.append(
+            "未配置 CDS API（MintPy 对流层 ERA5 需客户账号，可稍后「仅更新配置」补填）"
+        )
+    elif (cds_api_key or "").strip():
+        try:
+            write_cdsapirc_windows(cds_api_key.strip())
+            notes.append("已保存 CDS 配置到本机用户目录")
+        except OSError as e:
+            return False, f"保存 CDS 配置失败：{e}"
+        ok_cds, msg_cds = push_cdsapirc_to_wsl(
+            WSL_DISTRO_NAME,
+            cds_api_key.strip(),
+            decode=_decode_subprocess_output,
+            creationflags=_subprocess_creationflags(),
+        )
+        if not ok_cds:
+            return False, f"写入 WSL CDS 配置失败：{msg_cds}"
+        notes.append(msg_cds)
+    else:
+        from packaging.wsl_sanitize import sync_cdsapirc_from_windows_to_wsl
+
+        ok_cds, msg_cds = sync_cdsapirc_from_windows_to_wsl(
+            WSL_DISTRO_NAME,
+            decode=_decode_subprocess_output,
+            creationflags=_subprocess_creationflags(),
+        )
+        if not ok_cds:
+            return False, msg_cds
+        notes.append(msg_cds)
+
+    if weather_wsl:
+        notes.append(f"气象缓存目录（WEATHER_DIR）：{weather_wsl}")
+    elif weather_win:
+        notes.append("气象缓存目录已创建，但未能解析 WSL 路径（可在 wsl_config.env 中手动设置 WEATHER_DIR）")
+
+    ok_env, msg_env = verify_wsl_env()
+    if ok_env:
+        notes.append(msg_env)
+    else:
+        notes.append(f"环境验证：{msg_env}")
+
+    return True, "\n".join(notes)
 
 
 def verify_wsl_env() -> tuple[bool, str]:
@@ -338,7 +448,9 @@ def main_ui(app_root: Path) -> None:
         QProgressBar,
         QGroupBox,
         QFormLayout,
+        QCheckBox,
     )
+    from wsl_config_path import CDS_REGISTER_URL, cdsapirc_is_configured
     from PySide6.QtCore import Qt, QThread, Signal
     from PySide6.QtGui import QFont, QIcon
 
@@ -417,6 +529,74 @@ def main_ui(app_root: Path) -> None:
     ly2.addWidget(browse_target)
     layout.addWidget(grp2)
 
+    grp_cds = QGroupBox("3. Copernicus CDS（MintPy 对流层 ERA5）")
+    form_cds = QFormLayout(grp_cds)
+    cds_key_edit = QLineEdit()
+    cds_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+    cds_key_edit.setPlaceholderText("uid:api-key（在 CDS 网站注册后获取）")
+    form_cds.addRow("API Key：", cds_key_edit)
+    cds_skip_cb = QCheckBox("暂不配置（跳过在线下载 ERA5，可稍后在「仅更新配置」中补填）")
+    cds_skip_cb.setChecked(False)
+    form_cds.addRow("", cds_skip_cb)
+    cds_hint = QLabel(
+        f"对流层校正（MintPy 第 8 步）使用 ERA5 时需 Copernicus CDS 账号。"
+        f' <a href="{CDS_REGISTER_URL}">免费注册 CDS</a>。'
+        " 凭据仅保存在本机 %LOCALAPPDATA%\\InSAR\\，不会写入 WSL 镜像。"
+    )
+    cds_hint.setWordWrap(True)
+    cds_hint.setOpenExternalLinks(True)
+    cds_hint.setTextFormat(Qt.TextFormat.RichText)
+    layout.addWidget(grp_cds)
+    layout.addWidget(cds_hint)
+    if cdsapirc_is_configured():
+        cds_key_edit.setPlaceholderText("已配置（留空则保持原 Key，仅同步到 WSL）")
+
+    btn_save_cds = QPushButton("保存 CDS 并同步到 WSL（不重新导入镜像）")
+
+    def do_save_cds_only() -> None:
+        ok, _ = check_wsl_available()
+        if not ok:
+            status.setText("WSL 不可用。")
+            return
+        if not wsl_distro_exists():
+            QMessageBox.information(
+                win,
+                "未部署",
+                "请先完成 WSL 镜像导入，或确认发行版 InsarUbuntu24 已存在。",
+            )
+            return
+        if not _validate_cds_before_deploy():
+            return
+        install_root = _code_install_root(app_root)
+        ok_path, project_root_wsl = get_wsl_path_from_windows(str(install_root))
+        if not ok_path or not project_root_wsl:
+            ok_path, project_root_wsl = get_wsl_path_from_windows(str(app_root))
+        if not project_root_wsl:
+            QMessageBox.warning(win, "路径错误", "无法解析安装根目录 WSL 路径。")
+            return
+        ok_home, home = get_wsl_home()
+        env_script = f"{home}/insar-wsl/env_isce2.sh" if ok_home and home else "/home/insar/insar-wsl/env_isce2.sh"
+        cds_key, skip_cds = _cds_params_for_deploy()
+        progress.setVisible(True)
+        progress.setRange(0, 0)
+        ok_cfg, cfg_msg = finish_deploy_configuration(
+            app_root,
+            env_script,
+            project_root_wsl,
+            cds_api_key=cds_key,
+            skip_cds=skip_cds,
+        )
+        progress.setVisible(False)
+        if ok_cfg:
+            status.setText("CDS/配置已保存。")
+            QMessageBox.information(win, "完成", cfg_msg)
+        else:
+            status.setText(cfg_msg)
+            QMessageBox.warning(win, "失败", cfg_msg)
+
+    btn_save_cds.clicked.connect(do_save_cds_only)
+    layout.addWidget(btn_save_cds)
+
     # WSL 一键启用
     grp0 = QGroupBox("0. 启用 WSL（若未启用）")
     ly0 = QHBoxLayout(grp0)
@@ -433,6 +613,29 @@ def main_ui(app_root: Path) -> None:
     status = QLabel("")
     status.setWordWrap(True)
     layout.addWidget(status)
+
+    def _cds_params_for_deploy() -> tuple[str, bool]:
+        if cds_skip_cb.isChecked():
+            return "", True
+        key = cds_key_edit.text().strip()
+        if key:
+            return key, False
+        if cdsapirc_is_configured():
+            return "", False
+        return "", True
+
+    def _validate_cds_before_deploy() -> bool:
+        if cds_skip_cb.isChecked():
+            return True
+        if cds_key_edit.text().strip() or cdsapirc_is_configured():
+            return True
+        QMessageBox.warning(
+            win,
+            "CDS 未配置",
+            "请填写 CDS API Key（格式 uid:api-key），或勾选「暂不配置」。\n\n"
+            "MintPy 对流层 ERA5 需要客户自己的 CDS 账号，不会使用开发商个人账号。",
+        )
+        return False
 
     def do_check() -> None:
         ok, msg = check_wsl_available()
@@ -565,8 +768,19 @@ def main_ui(app_root: Path) -> None:
             return
         ok_home, home = get_wsl_home()
         env_script = f"{home}/insar-wsl/env_isce2.sh" if ok_home and home else "/home/insar/insar-wsl/env_isce2.sh"
-        write_wsl_config(app_root, WSL_DISTRO_NAME, env_script, project_root_wsl)
+        cds_key, skip_cds = _cds_params_for_deploy()
+        ok_cfg, cfg_msg = finish_deploy_configuration(
+            app_root,
+            env_script,
+            project_root_wsl,
+            cds_api_key=cds_key,
+            skip_cds=skip_cds,
+        )
         progress.setVisible(False)
+        if not ok_cfg:
+            status.setText(f"配置写入失败：{cfg_msg}")
+            QMessageBox.warning(win, "配置失败", cfg_msg)
+            return
         status.setText("更新完成：已覆盖 backend/lib/scripts 并写入配置，可直接启动 InSAR Desktop。")
         # 更新后检查关键脚本是否存在（避免 DEM 等功能因缺失 isce2 脚本报错）
         dem_py = install_root / "lib" / "isce2-main" / "applications" / "dem.py"
@@ -583,7 +797,9 @@ def main_ui(app_root: Path) -> None:
         QMessageBox.information(
             win,
             "更新完成",
-            "已从更新包覆盖 backend、lib、scripts 到安装根目录，并已写入 WSL 配置。\n\n请启动 InSAR Desktop 使用。",
+            "已从更新包覆盖 backend、lib、scripts 到安装根目录，并已写入 WSL 配置。\n\n"
+            + cfg_msg
+            + "\n\n请启动 InSAR Desktop 使用。",
         )
 
     def do_enable_wsl() -> None:
@@ -614,16 +830,35 @@ def main_ui(app_root: Path) -> None:
         env_script = f"{home}/insar-wsl/env_isce2.sh" if ok_home and home else "/home/insar/insar-wsl/env_isce2.sh"
         # 安装根目录（向导 exe 的上一级）：代码放此处，WSL 只读此路径下 backend/、lib/、scripts/，
         # 后续仅需更新该目录下的代码即可完成软件更新，无需重新导出/导入 WSL 镜像。
-        install_root = app_root.parent
+        install_root = _code_install_root(app_root)
         ok_path, project_root_wsl = get_wsl_path_from_windows(str(install_root))
         if not ok_path or not project_root_wsl:
             ok_path, project_root_wsl = get_wsl_path_from_windows(str(app_root))
         if not ok_path or not project_root_wsl:
             status.setText("无法解析安装根目录的 WSL 路径，请手动编辑 wsl_config.env 中的 INSAR_WSL_PROJECT_ROOT。")
             project_root_wsl = ""
-        write_wsl_config(app_root, WSL_DISTRO_NAME, env_script, project_root_wsl)
-        status.setText("配置已写入 " + str(app_root / "wsl_config.env") + "。可关闭向导并启动 InSAR Desktop。")
-        QMessageBox.information(win, "完成", "WSL 环境已导入，配置已写入 wsl_config.env。\n请启动 InSAR Desktop 使用。")
+        cds_key, skip_cds = _cds_params_for_deploy()
+        ok_cfg, cfg_msg = finish_deploy_configuration(
+            app_root,
+            env_script,
+            project_root_wsl,
+            cds_api_key=cds_key,
+            skip_cds=skip_cds,
+        )
+        if not ok_cfg:
+            status.setText("导入成功，但配置写入失败：" + cfg_msg)
+            QMessageBox.warning(
+                win,
+                "配置未完成",
+                "WSL 已导入，但 CDS/配置写入失败：\n" + cfg_msg,
+            )
+            return
+        status.setText("配置已写入。可关闭向导并启动 InSAR Desktop。")
+        QMessageBox.information(
+            win,
+            "完成",
+            "WSL 环境已导入。\n\n" + cfg_msg + "\n\n请启动 InSAR Desktop 使用。",
+        )
 
     def do_import() -> None:
         tar_path = tar_edit.text().strip()
@@ -637,6 +872,8 @@ def main_ui(app_root: Path) -> None:
             return
         if not target_path:
             status.setText("请选择导入目标目录。")
+            return
+        if not _validate_cds_before_deploy():
             return
         if getattr(win, "_import_worker", None) and win._import_worker.isRunning():
             return

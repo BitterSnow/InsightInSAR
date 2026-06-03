@@ -66,21 +66,55 @@ def _load_wsl_config(app_root: Path) -> None:
             continue
 
 
+def _resolve_install_code_root(app_root: Path) -> Path:
+    """
+    WSL 可访问的代码根：含 backend/scripts。
+    交付版 backend 与 exe 同目录（dist/InSAR Desktop/）；开发版在项目根。
+    """
+    marker = Path("backend") / "scripts" / "run_mintpy_init_wsl.py"
+    for candidate in (app_root, app_root.parent):
+        try:
+            if (candidate / marker).is_file():
+                return candidate.resolve()
+        except OSError:
+            continue
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        try:
+            mp = Path(meipass)
+            if (mp / marker).is_file():
+                return mp.resolve()
+        except OSError:
+            pass
+    internal = app_root / "_internal"
+    try:
+        if (internal / marker).is_file():
+            return internal.resolve()
+    except OSError:
+        pass
+    if (app_root.parent / "backend").is_dir():
+        return app_root.parent.resolve()
+    return app_root.resolve()
+
+
 # 应用根与 sys.path
 PROJECT_ROOT = _get_app_root()
+CODE_ROOT = _resolve_install_code_root(PROJECT_ROOT) if _is_frozen() else PROJECT_ROOT
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-os.environ["INSAR_PROJECT_ROOT"] = str(PROJECT_ROOT)
+os.environ["INSAR_PROJECT_ROOT"] = str(CODE_ROOT)
+os.environ["INSAR_CODE_ROOT"] = str(CODE_ROOT)
 try:
     from backend.services.wsl_runner import bootstrap_isce2_main_env, load_wsl_config_env
 
-    load_wsl_config_env(str(PROJECT_ROOT))
+    load_wsl_config_env(str(CODE_ROOT))
     bootstrap_isce2_main_env()
 except Exception:
     pass
 if _is_frozen():
     os.environ.setdefault("INSAR_USE_WSL", "1")
+    _load_wsl_config(CODE_ROOT)
     _load_wsl_config(PROJECT_ROOT)
 else:
     # 源码运行（含 scripts/start_desktop_wsl.bat 启动）：确保 WSL 模式与配置生效，避免子进程未继承导致初始化报错
@@ -142,7 +176,7 @@ if _file_handler is None:
     _root_logger.warning("无法写入日志文件（已尝试 %s），错误将输出到 stderr。", _log_file or "logs/desktop.log")
 
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 # 从项目根运行 (python -m desktop.main) 时 desktop 为包；从 desktop/ 运行则用 app
 try:
@@ -157,7 +191,23 @@ def _maybe_prompt_wsl_wizard(win: "QWidget") -> None:
         return
     try:
         from backend.services import wsl_runner
+
         if not wsl_runner.use_wsl():
+            return
+        # 与启动时 _load_wsl_config 一致：先按本机/安装目录判定，避免误报
+        for key in (
+            "INSAR_WSL_PROJECT_ROOT",
+            "INSAR_WSL_DISTRO",
+            "INSAR_WSL_ENV_SCRIPT",
+        ):
+            if os.environ.get(key, "").strip():
+                return
+        for cfg in _get_wsl_config_candidates(PROJECT_ROOT):
+            if cfg.is_file():
+                return
+        if (CODE_ROOT / "backend" / "scripts" / "run_mintpy_init_wsl.py").is_file():
+            return
+        if wsl_runner.is_wsl_project_configured():
             return
         if wsl_runner.get_wsl_project_root():
             return
@@ -223,8 +273,9 @@ def main() -> None:
 
     win = MainWindow()
     win.show()
+    app.processEvents()
     if _is_frozen():
-        _maybe_prompt_wsl_wizard(win)
+        QTimer.singleShot(400, lambda: _maybe_prompt_wsl_wizard(win))
     sys.exit(app.exec())
 
 

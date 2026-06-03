@@ -30,19 +30,23 @@ cd ..
 产出目录：`dist/InSAR Desktop/`，内含：
 
 - `InSAR Desktop.exe` — 主程序
-- `backend/`、`desktop/`、`shared_models.py` — 随包数据（与 exe 同层）
-- 其他 PyInstaller 运行时文件
+- PyInstaller 运行时（`_internal/` 等）
+- **打包后自动复制**（`stage_desktop_delivery.ps1`）：
+  - `backend/`、`scripts/` — WSL 桥接脚本（`python3 -m backend.scripts.*`）
+  - `shared_models.py`、`wsl_config_path.py`、`cds_wsl_bridge.py`
+  - **不复制** `lib/MintPy-main`、`lib/isce2-main`（MintPy / ISCE2 在 WSL 镜像的 conda 环境内）
 
-### 部署（含 WSL 使用）
+### 交付客户（推荐）
 
-采用「环境与代码分离」时，**安装根目录**为 `dist/`（与 `InSAR Desktop/`、`InSAR WSL Deploy Wizard/` 同级）。请将以下目录复制到 **`dist/`** 下，供 WSL 通过 `INSAR_WSL_PROJECT_ROOT` 访问：
+**仅拷贝 `dist/` 下全部文件夹**即可（`InSAR Desktop`、`InSAR WSL Deploy Wizard`、`insar-wsl.tar` 等）。
 
-- `backend/`
-- `lib/isce2-main/`（至少保留 `contrib/stack/topsStack` 等脚本）
-- `lib/MintPy-main/`（至少 `src`）
-- `scripts/`（可选，按需）
+每个程序目录自包含 WSL 所需代码；**`INSAR_WSL_PROJECT_ROOT` 应指向 `InSAR Desktop` 文件夹的 WSL 路径**（部署向导在检测到同目录 `backend/` 时会自动如此配置）。
 
-即 `dist/` 下除两个 exe 目录和 `insar-wsl.tar` 外，还包含 `backend/`、`lib/` 等；部署向导会将 `INSAR_WSL_PROJECT_ROOT` 设为 `dist/` 的 WSL 路径。
+无需再把 `backend/` 单独放在 `InSAR Desktop` 的上一级。
+
+### 部署（含 WSL 使用，旧版「安装根分离」仍兼容）
+
+若仍采用「环境与代码分离」，**安装根目录**也可为 `dist/`（与 `InSAR Desktop/` 同级），WSL 会优先使用 `InSAR Desktop/backend/`（若存在）。
 
 ### 打包版行为
 
@@ -88,7 +92,7 @@ python -m packaging.wsl_deploy_wizard [--app-root "D:\InSAR"]
 1. 检查 WSL 是否可用。
 2. 用户选择 `insar-wsl.tar` 路径及导入目标目录。
 3. 执行 `wsl --import InsarUbuntu24 <目标> <tar>`。
-4. 检测 WSL 内 `$HOME` 并拼出 `INSAR_WSL_ENV_SCRIPT`，将**安装根目录**（向导 exe 所在目录的上一级）转为 WSL 路径作为 `INSAR_WSL_PROJECT_ROOT`。
+4. 检测 WSL 内 `$HOME` 并拼出 `INSAR_WSL_ENV_SCRIPT`；将 **InSAR Desktop 目录**（若含 `backend/`）或安装根目录转为 WSL 路径作为 `INSAR_WSL_PROJECT_ROOT`。
 5. 在应用根目录及本机固定路径写入 `wsl_config.env`，供 Desktop 启动时加载。
 
 **离线用 WSL 镜像**：需在**有网络的构建机**上导出一份 `insar-wsl.tar`，与 Desktop/向导 一起拷贝到离线环境。  
@@ -136,6 +140,12 @@ python -m packaging.wsl_deploy_wizard [--app-root "D:\InSAR"]
 3. **环境升级**（如 ISCE2/MintPy 版本升级）：需在构建机重新导出 `insar-wsl.tar`，用户重新运行部署向导选择新 tar 导入（或先卸载旧发行版再导入）。
 
 导出「仅含环境」的镜像时，构建机 WSL 内不要将项目代码放在 `~/insar-system`，仅保留 `~/insar-wsl/env_isce2.sh` 等环境配置；或使用当前 `export_wsl_image.ps1` 导出后，用户侧仍以安装根目录为代码来源（WSL 通过 `/mnt/...` 访问），代码更新方式同上。
+
+### CDS / ERA5（对流层校正）
+
+- **导出**：`InSAR WSL Export Wizard` 或 `export_wsl_image.ps1` 在 `wsl --export` 前会自动脱敏（删除 `~/.cdsapirc`、`WEATHER_DIR`/CDS 环境变量、常见 ERA5 缓存）。内部构建可勾选「保留开发机凭据」。
+- **部署**：`InSAR WSL Deploy Wizard` 导入时让客户填写 Copernicus CDS API Key（或暂不配置）；凭据保存在 `%LOCALAPPDATA%\InSAR\cdsapirc`，并同步到 WSL `~/.cdsapirc`，**不会**打入 `insar-wsl.tar`。
+- **气象缓存**：部署时创建 `%LOCALAPPDATA%\InSAR\weather`，并在 `wsl_config.env` 中写入 `WEATHER_DIR`（WSL 路径）。
 
 ## 阶段 3：安装程序与文档
 

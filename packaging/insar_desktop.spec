@@ -21,6 +21,7 @@ a = Analysis(
     ],
     hiddenimports=[
         "wsl_config_path",
+        "cds_wsl_bridge",
         "backend.services.wsl_runner",
         "backend.services.s1_processing_service",
         "backend.services.stack_processing_service",
