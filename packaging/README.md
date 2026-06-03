@@ -96,7 +96,7 @@ python -m packaging.wsl_deploy_wizard [--app-root "D:\InSAR"]
 5. 在应用根目录及本机固定路径写入 `wsl_config.env`，供 Desktop 启动时加载。
 
 **离线用 WSL 镜像**：需在**有网络的构建机**上导出一份 `insar-wsl.tar`，与 Desktop/向导 一起拷贝到离线环境。  
-在项目根目录双击 **`packaging/export_wsl_image.bat`**（或运行 `powershell -File packaging/export_wsl_image.ps1`），会在 `dist/insar-wsl.tar` 生成镜像；构建机需已安装 WSL2 与 Ubuntu，脚本会在 WSL 内自动检查/安装 ISCE2+MintPy 后导出。详见 `docs/wsl_ubuntu24_isce2_setup.md` 第 10 节。
+在项目根目录双击 **`packaging/export_wsl_image.bat`**（或运行 `powershell -File packaging/export_wsl_image.ps1`），会在 `dist/insar-wsl.tar` 生成镜像；构建机需已安装 WSL2 与 Ubuntu，脚本会在 WSL 内自动检查/安装 ISCE2+MintPy 后导出。详见本文「离线用 WSL 镜像」与「离线交付清单」。
 
 ---
 
@@ -150,4 +150,4 @@ python -m packaging.wsl_deploy_wizard [--app-root "D:\InSAR"]
 ## 阶段 3：安装程序与文档
 
 - 安装脚本：见 `packaging/installer/`（如使用 Inno Setup）。
-- 在线/离线部署说明：见 `docs/wsl_ubuntu24_isce2_setup.md`（在线配置与 §10 离线部署）。
+- 在线/离线部署说明：见本文「向导流程」「离线交付清单」与「环境与代码分离」。

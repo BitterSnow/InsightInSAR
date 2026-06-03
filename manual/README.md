@@ -16,9 +16,9 @@
 PDF 最后一章包含完整截图清单。建议按编号命名截图，例如：
 
 ```text
-docs/manual/screenshots/S-05-main-window.png
-docs/manual/screenshots/S-10-dem-dialog.png
-docs/manual/screenshots/S-17-mintpy-flow.png
+manual/screenshots/S-05-main-window.png
+manual/screenshots/S-10-dem-dialog.png
+manual/screenshots/S-17-mintpy-flow.png
 ```
 
 补齐截图后，可以把截图发给我或直接放入 `screenshots/` 目录。我会把 HTML 中的占位框替换为真实图片，并重新导出完整版 PDF。
@@ -29,7 +29,7 @@ docs/manual/screenshots/S-17-mintpy-flow.png
 
 ```powershell
 cd D:\coding\insar-system
-$html = (Resolve-Path docs\manual\operation-manual-placeholder.html).Path.Replace('\','/')
-$pdf = (Join-Path (Resolve-Path docs\manual).Path 'Insight_InSAR_Operation_Manual_Placeholder.pdf')
+$html = (Resolve-Path manual\operation-manual-placeholder.html).Path.Replace('\','/')
+$pdf = (Join-Path (Resolve-Path manual).Path 'Insight_InSAR_Operation_Manual_Placeholder.pdf')
 & 'C:\Program Files\Google\Chrome\Application\chrome.exe' --headless=new --disable-gpu --no-pdf-header-footer --print-to-pdf="$pdf" "file:///$html"
 ```

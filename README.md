@@ -38,22 +38,20 @@ InsightInSAR/
 ├── packaging/            # Windows 打包与安装相关脚本与配置
 ├── build/                # 构建中间目录（可清理）
 ├── dist/                 # 打包产物（如安装包、可执行文件）
-├── docs/                 # 文档（安装、架构、阶段规划等）
+├── manual/               # 操作说明书（PDF、HTML、截图）
 ├── logs/                 # 运行日志（本地调试与生产排障）
 ├── .venv/                # Python 虚拟环境（本地）
 └── README.md             # 当前文件
 ```
 
-更多说明见：`docs/installation_and_deployment.md`、`docs/wsl_ubuntu24_isce2_setup.md`。
-
-教学视频解说词与 TTS 批量脚本见：`docs/video/README.md`（Cursor 技能：`insar-tutorial-video`）。
+安装与离线交付说明见：`packaging/README.md`。操作说明书见：`manual/README.md`。
 
 ### 快速开始（开发环境）
 
 1. **环境要求**
    - Windows 10/11，已启用 WSL 2
    - 本机 Python 3.10+（用于运行桌面与后端，**不需**在 Windows 上安装 ISCE2）
-   - WSL 内已按 `docs/wsl_ubuntu24_isce2_setup.md` 配置好 ISCE2 与 MintPy，并设置 `INSAR_USE_WSL=1`、`INSAR_WSL_PROJECT_ROOT` 等（可通过「InSAR WSL 部署向导」或 `scripts/start_desktop_wsl.bat` 写入配置）
+   - WSL 内已配置好 ISCE2 与 MintPy，并设置 `INSAR_USE_WSL=1`、`INSAR_WSL_PROJECT_ROOT` 等（见 `packaging/README.md`；可通过「InSAR WSL 部署向导」或 `scripts/start_desktop_wsl.bat` 写入配置）
 
 2. **创建与激活虚拟环境**
 

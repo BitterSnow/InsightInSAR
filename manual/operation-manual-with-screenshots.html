@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Insight InSAR 操作说明书（截图占位版）</title>
+  <title>Insight InSAR 操作说明书</title>
   <style>
     @page {
       size: A4;
@@ -376,8 +376,33 @@
       .page {
         margin: 0;
         width: auto;
-        min-height: auto;
+        min-height: calc(297mm - 36mm);
         box-shadow: none;
+        break-after: page;
+        page-break-after: always;
+        overflow: hidden;
+      }
+
+      .page:last-of-type {
+        break-after: auto;
+        page-break-after: auto;
+      }
+
+      .cover {
+        min-height: calc(297mm - 36mm);
+        padding: 26mm 20mm 18mm;
+      }
+
+      .cover h1 {
+        margin-top: 28mm;
+      }
+
+      .cover-grid {
+        margin-top: 20mm;
+      }
+
+      .cover-footer {
+        bottom: 16mm;
       }
 
       a {
@@ -392,7 +417,7 @@
       <div class="brand-mark"><span></span></div>
       <div>Insight InSAR</div>
     </div>
-    <h1>操作说明书<br>截图占位版</h1>
+    <h1>操作说明书</h1>
     <div class="subtitle">
       面向 Windows + WSL 的 Sentinel-1 InSAR 处理流程说明。本文档覆盖安装部署、工程创建、ISCE2 Stack 配置与处理、DEM 制作、MintPy 时间序列与结果导出。
     </div>
@@ -402,7 +427,7 @@
       <div class="cover-chip"><b>离线交付</b><span>WSL 镜像导入与配置</span></div>
     </div>
     <div class="cover-footer">
-      <span>版本：v0.1-placeholder</span>
+      <span>版本：v1.0</span>
       <span>生成日期：2026-06-03</span>
     </div>
   </section>
@@ -419,11 +444,10 @@
         <a href="#mintpy">6. MintPy 时间序列流程</a>
         <a href="#export">7. 结果查看与矢量导出</a>
         <a href="#trouble">8. 常见问题排查</a>
-        <a href="#screenshots">9. 截图清单</a>
       </div>
 
       <div class="note">
-        <b>使用说明：</b>当前 PDF 是截图占位版。每个截图框都标有编号和建议文件名。请将截图放入 <code>docs/manual/screenshots/</code>，后续可替换占位框并生成完整版说明书。
+        <b>使用说明：</b>本文档为 Insight InSAR 正式操作说明书，包含安装部署、工程创建、Stack 处理、MintPy 时间序列和结果导出流程。
       </div>
 
       <h2 id="overview">1. 软件定位与处理流程</h2>
@@ -432,25 +456,25 @@
 
       <div class="flow">
         <div><b>1. 部署环境</b>导入 WSL 镜像，写入 <code>wsl_config.env</code></div>
-        <div><b>2. 创建工程</b>设置项目路径、雷达类型与工作区</div>
+        <div><b>2. 创建工程</b>设置项目路径与雷达类型</div>
         <div><b>3. 准备数据</b>SLC、Orbit、Aux、DEM 与范围参数</div>
         <div><b>4. 执行处理</b>Stack、MintPy 与结果导出</div>
       </div>
 
-      <div class="screenshot small">
+      <div class="screenshot">
         <div class="shot-id">S-01</div>
-        <img src="screenshots/S-01-overview.png" alt="Insight InSAR Windows Desktop / WSL / ISCE2 + MintPy 三栏架构图">
+        <img src="screenshots/S-01-overview.png" alt="Insight InSAR 运行架构：Windows Desktop / WSL Bridge / ISCE2 + MintPy">
         <div class="caption">图 S-01 Insight InSAR 运行架构：Windows Desktop / WSL Bridge / ISCE2 + MintPy</div>
       </div>
+
 
       <h3>推荐处理主线</h3>
       <ol>
         <li>确认 WSL2 可用，并通过部署向导导入 <code>insar-wsl.tar</code>。</li>
-        <li>启动 InSAR Desktop，新建工程，定义工作区范围。</li>
-        <li>准备 Sentinel-1 SLC、Orbit、Aux、DEM 或 DEM 原始瓦片。</li>
-        <li>制作 DEM，或选择已有 DEM。</li>
-        <li>执行 Sentinel-1 导入，生成 SLC/VRT 等中间结果。</li>
-        <li>初始化并执行 ISCE2 Stack 流程。</li>
+        <li>启动 InSAR Desktop，新建工程。</li>
+        <li>进入 ISCE2 Stack 流程配置，填写 SLC、Orbit、Aux、工作区与参考日期。</li>
+        <li>在 Stack 配置中制作 DEM，或选择已有 DEM。</li>
+        <li>初始化并执行 ISCE2 Stack 流程，完成 Sentinel-1 解包、几何、干涉和解缠等处理。</li>
         <li>进入 MintPy，完成时间序列分析、速率估计与地理编码。</li>
         <li>查看产品，按需导出 GeoPackage 或 Shapefile。</li>
       </ol>
@@ -476,22 +500,22 @@
 
       <div class="screenshot">
         <div class="shot-id">S-02</div>
-        <div class="title">安装根目录三件套</div>
-        <p>建议截图：资源管理器展示 <code>InSAR Desktop</code>、<code>InSAR WSL Deploy Wizard</code>、<code>insar-wsl.tar</code> 位于同一安装根目录。</p>
-        <div class="path">建议文件名：docs/manual/screenshots/S-02-install-root.png</div>
+        <img src="screenshots/S-02.png" alt="安装根目录三件套">
+        <div class="caption">图 S-02 安装根目录三件套</div>
       </div>
+
 
       <h3>2.2 检查 WSL2</h3>
       <p>打开 PowerShell，执行：</p>
       <p><code>wsl -l -v</code></p>
       <p>如果命令能列出发行版，并且版本为 2，说明 WSL2 基础环境可用。若命令失败，请先启用 WSL2 或完成 Windows 组件安装。</p>
 
-      <div class="screenshot small">
+      <div class="screenshot">
         <div class="shot-id">S-03</div>
-        <div class="title">PowerShell 检查 WSL2</div>
-        <p>建议截图：PowerShell 中 <code>wsl -l -v</code> 的输出，显示发行版名称与 VERSION 2。</p>
-        <div class="path">建议文件名：docs/manual/screenshots/S-03-wsl-list.png</div>
+        <img src="screenshots/S-03.png" alt="PowerShell 检查 WSL2">
+        <div class="caption">图 S-03 PowerShell 检查 WSL2</div>
       </div>
+
 
       <h3>2.3 使用部署向导导入 WSL 镜像</h3>
       <ol>
@@ -505,10 +529,10 @@
 
       <div class="screenshot">
         <div class="shot-id">S-04</div>
-        <div class="title">WSL 部署向导：选择镜像与导入目录</div>
-        <p>建议截图：向导中选择 <code>insar-wsl.tar</code> 和目标导入目录的界面。</p>
-        <div class="path">建议文件名：docs/manual/screenshots/S-04-deploy-wizard.png</div>
+        <img src="screenshots/S-04.png" alt="WSL 部署向导：选择镜像与导入目录">
+        <div class="caption">图 S-04 WSL 部署向导：选择镜像与导入目录</div>
       </div>
+
 
       <div class="warning">
         <b>注意顺序：</b>请先运行部署向导，再启动桌面主程序。若先启动主程序，界面可能正常，但提交任务时会因为 WSL 配置缺失而失败。
@@ -527,10 +551,10 @@
 
       <div class="screenshot">
         <div class="shot-id">S-05</div>
-        <div class="title">InSAR Desktop 主界面</div>
-        <p>建议截图：主程序启动后的完整界面，包含菜单栏、工程区和主内容区。</p>
-        <div class="path">建议文件名：docs/manual/screenshots/S-05-main-window.png</div>
+        <img src="screenshots/S-05.png" alt="InSAR Desktop 主界面">
+        <div class="caption">图 S-05 InSAR Desktop 主界面</div>
       </div>
+
 
       <h3>3.2 确认配置文件</h3>
       <p>部署向导会写入 <code>wsl_config.env</code>。常见关键字段包括：</p>
@@ -542,12 +566,6 @@
         <tr><td><code>WEATHER_DIR</code></td><td>对流层校正等步骤使用的气象数据缓存目录。</td></tr>
       </table>
 
-      <div class="screenshot small">
-        <div class="shot-id">S-06</div>
-        <div class="title">wsl_config.env 配置示例</div>
-        <p>建议截图：脱敏后的 <code>wsl_config.env</code>，展示发行版、环境脚本和项目根路径字段。</p>
-        <div class="path">建议文件名：docs/manual/screenshots/S-06-wsl-config.png</div>
-      </div>
 
       <h3>3.3 启动失败或任务失败的快速判断</h3>
       <ul>
@@ -566,10 +584,10 @@
 
       <div class="screenshot">
         <div class="shot-id">S-07</div>
-        <div class="title">新建工程对话框</div>
-        <p>建议截图：填写工程名称、雷达数据类型 Sentinel-1、项目路径的界面。</p>
-        <div class="path">建议文件名：docs/manual/screenshots/S-07-new-project.png</div>
+        <img src="screenshots/S-07.png" alt="新建工程对话框">
+        <div class="caption">图 S-07 新建工程对话框</div>
       </div>
+
 
       <h3>4.2 打开已有工程</h3>
       <p>如需继续处理已有项目，可选择 <b>文件 → 打开工程</b>。工程列表会显示在左侧树形区域。建议每个处理区域使用独立工程目录，便于归档输入、处理过程和输出结果。</p>
@@ -591,10 +609,10 @@
 
       <div class="screenshot">
         <div class="shot-id">S-08</div>
-        <div class="title">Stack 流程配置入口</div>
-        <p>建议截图：工程界面中打开 Stack 流程配置的入口，或 Stack 配置窗口刚打开的状态。</p>
-        <div class="path">建议文件名：docs/manual/screenshots/S-08-stack-entry.png</div>
+        <img src="screenshots/S-08.png" alt="Stack 流程配置入口">
+        <div class="caption">图 S-08 Stack 流程配置入口</div>
       </div>
+
 
       <h3>5.2 填写输入数据与工作目录</h3>
       <p>Stack 配置界面中需要填写工作目录、Sentinel-1 SLC 数据目录、Orbit 目录、Aux 目录和 DEM 路径。SLC 数据目录可以包含多个 <code>.zip</code> 或 <code>.SAFE</code> 数据，Stack 初始化时会根据这些数据生成处理配置。</p>
@@ -607,12 +625,12 @@
         <tr><td>DEM</td><td>已有 DEM 文件，或通过配置界面中的 DEM 制作生成。</td><td>优先使用覆盖工作区与 swath 范围的 DEM。</td></tr>
       </table>
 
-      <div class="screenshot small">
+      <div class="screenshot">
         <div class="shot-id">S-09</div>
-        <div class="title">Stack 输入数据目录结构</div>
-        <p>建议截图：展示 SLC、Orbit、Aux、DEM 原始瓦片或 DEM 输出目录的资源管理器结构。</p>
-        <div class="path">建议文件名：docs/manual/screenshots/S-09-data-folders.png</div>
+        <img src="screenshots/S-09.png" alt="Stack 输入数据目录结构">
+        <div class="caption">图 S-09 Stack 输入数据目录结构</div>
       </div>
+
 
       <h3>5.3 定义工作区与导入 KML</h3>
       <p>处理范围在 Stack 配置界面中填写。可以手动填写 S/N/W/E，也可以导入 KML，让软件读取多边形边界并自动填入范围。</p>
@@ -620,10 +638,10 @@
 
       <div class="screenshot">
         <div class="shot-id">S-10</div>
-        <div class="title">Stack 配置中的工作区 / KML 导入</div>
-        <p>建议截图：Stack 配置界面里的 KML 导入按钮、S/N/W/E 范围输入和工作区相关字段。</p>
-        <div class="path">建议文件名：docs/manual/screenshots/S-10-stack-workspace.png</div>
+        <img src="screenshots/S-10.png" alt="Stack 配置中的工作区 / KML 导入">
+        <div class="caption">图 S-10 Stack 配置中的工作区 / KML 导入</div>
       </div>
+
 
       <h3>5.4 在 Stack 配置中制作 DEM</h3>
       <p>如果没有现成 DEM，可在 Stack 配置界面点击 <b>DEM 制作</b>。DEM 制作对话框会读取当前工作区和 SAFE 数据，并可根据工作区与 swath 更新 DEM 范围。</p>
@@ -638,41 +656,35 @@
 
       <div class="screenshot">
         <div class="shot-id">S-11</div>
-        <div class="title">Stack 流程中的 DEM 制作</div>
-        <p>建议截图：从 Stack 配置界面打开 DEM 制作窗口，展示 DEM 原始目录、输出目录、范围和开始制作按钮。</p>
-        <div class="path">建议文件名：docs/manual/screenshots/S-11-dem-dialog.png</div>
+        <img src="screenshots/S-11.png" alt="Stack 流程中的 DEM 制作">
+        <div class="caption">图 S-11 Stack 流程中的 DEM 制作</div>
       </div>
+
 
       <h3>5.5 自动计算 subswath</h3>
       <p>Stack 配置界面中可根据工作范围自动计算需要处理的 subswath。软件会读取 Sentinel-1 annotation，判断 IW1、IW2、IW3 哪些与工作区相交。</p>
       <p>只处理必要的 subswath 可以减少计算量，但如果对范围判断不确定，也可以手动指定需要处理的 swath。</p>
 
-      <div class="screenshot small">
+      <div class="screenshot">
         <div class="shot-id">S-12</div>
-        <div class="title">Stack 配置中的 subswath 自动计算</div>
-        <p>建议截图：点击根据工作范围自动计算后，Swaths 字段显示处理结果。</p>
-        <div class="path">建议文件名：docs/manual/screenshots/S-12-auto-swath.png</div>
+        <img src="screenshots/S-12.png" alt="Stack 配置中的 subswath 自动计算">
+        <div class="caption">图 S-12 Stack 配置中的 subswath 自动计算</div>
       </div>
+
 
       <h3>5.6 初始化 Stack 流程</h3>
       <p>所有参数确认后，点击 <b>初始化流程</b>。初始化会在 WSL 中运行 <code>stackSentinel.py</code>，生成 <code>configs</code> 和 <code>run_files</code>。软件随后解析 <code>run_xx</code>，并在流程界面展示可执行步骤。</p>
 
-      <div class="screenshot">
-        <div class="shot-id">S-13</div>
-        <div class="title">Stack 流程配置完整填写</div>
-        <p>建议截图：Stack 工作目录、SLC、DEM、Orbit、Aux、范围、参考日期和 swath 参数都已填写的界面。</p>
-        <div class="path">建议文件名：docs/manual/screenshots/S-13-stack-config.png</div>
-      </div>
 
       <h3>5.7 按步骤运行 Stack</h3>
       <p>Stack 流程界面支持 <b>运行当前步</b>、<b>从本步运行</b> 和 <b>全线运行</b>。首次处理建议先按步骤运行，确认参考景、几何和干涉相关目录逐步生成。</p>
 
       <div class="screenshot">
         <div class="shot-id">S-14</div>
-        <div class="title">Stack 流程步骤表</div>
-        <p>建议截图：显示 run_xx 步骤、状态列、运行按钮和日志区域。</p>
-        <div class="path">建议文件名：docs/manual/screenshots/S-14-stack-flow.png</div>
+        <img src="screenshots/S-14.png" alt="Stack 流程步骤表">
+        <div class="caption">图 S-14 Stack 流程步骤表</div>
       </div>
+
 
       <h3>5.8 Stack 日志观察点</h3>
       <ul>
@@ -700,10 +712,10 @@
 
       <div class="screenshot">
         <div class="shot-id">S-15</div>
-        <div class="title">MintPy 工作目录初始化</div>
-        <p>建议截图：选择 MintPy 工作目录或初始化完成后的界面。</p>
-        <div class="path">建议文件名：docs/manual/screenshots/S-15-mintpy-init.png</div>
+        <img src="screenshots/S-15.png" alt="MintPy 工作目录初始化">
+        <div class="caption">图 S-15 MintPy 工作目录初始化</div>
       </div>
+
 
       <h3>6.2 执行 MintPy 步骤</h3>
       <p>进入 MintPy 流程界面后，可看到常用步骤表，包括加载数据、修改网络、参考点、解缠误差校正、网络反演、对流层校正、去斜、地形残差校正、速率估计和地理编码等。</p>
@@ -711,20 +723,20 @@
 
       <div class="screenshot">
         <div class="shot-id">S-16</div>
-        <div class="title">MintPy 流程步骤表</div>
-        <p>建议截图：MintPy 步骤表、状态列、运行当前步、从本步运行、全部运行和日志区域。</p>
-        <div class="path">建议文件名：docs/manual/screenshots/S-16-mintpy-flow.png</div>
+        <img src="screenshots/S-16.png" alt="MintPy 流程步骤表">
+        <div class="caption">图 S-16 MintPy 流程步骤表</div>
       </div>
+
 
       <h3>6.3 参数配置</h3>
       <p>MintPy 参数可通过快速配置、高级设置或原始配置文件方式修改。若某一步失败，优先检查 <code>smallbaselineApp.cfg</code> 中的输入路径和相关参数。</p>
 
-      <div class="screenshot small">
+      <div class="screenshot">
         <div class="shot-id">S-17</div>
-        <div class="title">MintPy 参数配置界面</div>
-        <p>建议截图：快速配置、高级设置或原始配置文件界面。</p>
-        <div class="path">建议文件名：docs/manual/screenshots/S-17-mintpy-config.png</div>
+        <img src="screenshots/S-17.png" alt="MintPy 参数配置界面">
+        <div class="caption">图 S-17 MintPy 参数配置界面</div>
       </div>
+
     </main>
   </section>
 
@@ -734,22 +746,16 @@
       <h3>7.1 查看产品</h3>
       <p>Stack 或 MintPy 流程完成后，可通过产品查看界面打开输出目录和结果文件。建议按工程、处理日期和参数版本归档输出，保留日志与配置文件，便于复现。</p>
 
-      <div class="screenshot">
-        <div class="shot-id">S-18</div>
-        <div class="title">产品查看界面</div>
-        <p>建议截图：产品查看窗口，展示输出目录或主要结果文件。</p>
-        <div class="path">建议文件名：docs/manual/screenshots/S-18-product-viewer.png</div>
-      </div>
 
       <h3>7.2 MintPy 转矢量</h3>
       <p>如需在 GIS 软件中使用 MintPy 结果，可打开 <b>工具 → MintPy 转矢量</b>。选择 velocity 文件、timeseries 文件、输出目录和输出格式，可生成 GeoPackage 或 Shapefile 点图层。</p>
 
       <div class="screenshot">
         <div class="shot-id">S-19</div>
-        <div class="title">MintPy 转矢量工具</div>
-        <p>建议截图：选择 velocity、timeseries、输出格式和开始转换按钮。</p>
-        <div class="path">建议文件名：docs/manual/screenshots/S-19-vector-export.png</div>
+        <img src="screenshots/S-19.png" alt="MintPy 转矢量工具">
+        <div class="caption">图 S-19 MintPy 转矢量工具</div>
       </div>
+
 
       <h3>7.3 结果归档建议</h3>
       <ul>
@@ -798,49 +804,9 @@
         </tr>
       </table>
 
-      <div class="screenshot small">
-        <div class="shot-id">S-20</div>
-        <div class="title">典型错误日志示例</div>
-        <p>建议截图：一次可脱敏的错误日志，突出路径、环境或输入数据错误。</p>
-        <div class="path">建议文件名：docs/manual/screenshots/S-20-error-log.png</div>
-      </div>
 
       <div class="tip">
         <b>反馈问题时建议提供：</b>工程路径、<code>wsl_config.env</code> 脱敏内容、失败步骤名称、失败前后 50 行日志、输入数据目录结构截图。
-      </div>
-    </main>
-  </section>
-
-  <section class="page">
-    <main>
-      <h2 id="screenshots">9. 截图清单</h2>
-      <p>请按下表补充截图。文件名不是强制要求，但建议按编号命名，后续生成完整版时更容易自动替换。</p>
-      <table>
-        <tr><th>编号</th><th>建议文件名</th><th>截图内容</th></tr>
-        <tr><td>S-01</td><td><code>S-01-overview.png</code></td><td>主界面或系统架构总览</td></tr>
-        <tr><td>S-02</td><td><code>S-02-install-root.png</code></td><td>安装根目录三件套</td></tr>
-        <tr><td>S-03</td><td><code>S-03-wsl-list.png</code></td><td><code>wsl -l -v</code> 输出</td></tr>
-        <tr><td>S-04</td><td><code>S-04-deploy-wizard.png</code></td><td>部署向导选择 tar 与导入目录</td></tr>
-        <tr><td>S-05</td><td><code>S-05-main-window.png</code></td><td>InSAR Desktop 主界面</td></tr>
-        <tr><td>S-06</td><td><code>S-06-wsl-config.png</code></td><td><code>wsl_config.env</code> 脱敏配置</td></tr>
-        <tr><td>S-07</td><td><code>S-07-new-project.png</code></td><td>新建工程对话框</td></tr>
-        <tr><td>S-08</td><td><code>S-08-stack-entry.png</code></td><td>Stack 流程配置入口</td></tr>
-        <tr><td>S-09</td><td><code>S-09-data-folders.png</code></td><td>Stack 输入数据目录结构</td></tr>
-        <tr><td>S-10</td><td><code>S-10-stack-workspace.png</code></td><td>Stack 配置中的工作区 / KML 导入</td></tr>
-        <tr><td>S-11</td><td><code>S-11-dem-dialog.png</code></td><td>Stack 流程中的 DEM 制作</td></tr>
-        <tr><td>S-12</td><td><code>S-12-auto-swath.png</code></td><td>Stack 配置中的 subswath 自动计算</td></tr>
-        <tr><td>S-13</td><td><code>S-13-stack-config.png</code></td><td>Stack 流程配置完整填写</td></tr>
-        <tr><td>S-14</td><td><code>S-14-stack-flow.png</code></td><td>Stack 流程步骤表</td></tr>
-        <tr><td>S-15</td><td><code>S-15-mintpy-init.png</code></td><td>MintPy 工作目录初始化</td></tr>
-        <tr><td>S-16</td><td><code>S-16-mintpy-flow.png</code></td><td>MintPy 流程步骤表</td></tr>
-        <tr><td>S-17</td><td><code>S-17-mintpy-config.png</code></td><td>MintPy 参数配置</td></tr>
-        <tr><td>S-18</td><td><code>S-18-product-viewer.png</code></td><td>产品查看界面</td></tr>
-        <tr><td>S-19</td><td><code>S-19-vector-export.png</code></td><td>MintPy 转矢量工具</td></tr>
-        <tr><td>S-20</td><td><code>S-20-error-log.png</code></td><td>典型错误日志示例</td></tr>
-      </table>
-
-      <div class="footer-note">
-        本说明书为截图占位版。补齐截图后，可将占位框替换为实际图片，并重新导出完整版 PDF。
       </div>
     </main>
   </section>
