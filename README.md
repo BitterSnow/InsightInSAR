@@ -81,6 +81,10 @@ InsightInSAR/
 - FastAPI 将 InSAR 任务交给 Celery；Celery 通过 **wsl_runner** 在 WSL 内执行 `run_s1_extract_wsl`、`run_stack_wsl`、`run_mintpy_wsl` 等，**不在 Windows 上直接调用 ISCE2/MintPy**。
 - 数据与工作目录可为 Windows 路径；后端在调用 WSL 前将所需路径转换为 WSL 路径，结果仍可从 Windows 访问。
 
+### 测试讨论
+
+测试讨论 QQ 群：**678738326**
+
 ### License
 
 MIT
