@@ -58,14 +58,21 @@ def get_dem_bbox_from_workspace_safe(
     return (dem_s, dem_n, dem_w, dem_e)
 
 
+def format_srtm_tile_name(lat: int, lon: int) -> str:
+    """
+    SRTMGL1 瓦片名：纬度 2 位、经度 3 位（如 N28E096、N08E105、S35W074）。
+    """
+    lat_str = f"N{abs(lat):02d}" if lat >= 0 else f"S{abs(lat):02d}"
+    lon_str = f"E{abs(lon):03d}" if lon >= 0 else f"W{abs(lon):03d}"
+    return lat_str + lon_str
+
+
 def list_srtm_tiles_for_bbox(south: int, north: int, west: int, east: int) -> List[str]:
     """返回覆盖 bbox 所需的 SRTM 1°x1° 瓦片名列表，如 ['N26E105', 'S35W074']。"""
     tiles: List[str] = []
     for lat in range(south, north):
         for lon in range(west, east):
-            lat_str = f"N{lat}" if lat >= 0 else f"S{abs(lat)}"
-            lon_str = f"E{lon}" if lon >= 0 else f"W{abs(lon)}"
-            tiles.append(lat_str + lon_str)
+            tiles.append(format_srtm_tile_name(lat, lon))
     return tiles
 
 
