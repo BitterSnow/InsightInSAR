@@ -1,3 +1,5 @@
+**语言 / Language:** **简体中文** | [English](README.en.md)
+
 ## Insight InSAR
 
 Windows 桌面 + WSL InSAR 处理的一站式形变监测系统：本地桌面端（PySide6）与后端（FastAPI + Celery + Redis）运行在 Windows，**无网页前端依赖**；所有 InSAR 计算（ISCE2 / MintPy）仅在 WSL 内执行，无需在 Windows 上安装或构建 ISCE2。
