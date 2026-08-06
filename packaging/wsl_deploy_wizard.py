@@ -17,8 +17,11 @@ from typing import Optional
 
 # 支持从项目根或 packaging 目录运行
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+_PKG_DIR = Path(__file__).resolve().parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+if str(_PKG_DIR) not in sys.path:
+    sys.path.insert(0, str(_PKG_DIR))
 
 # 固定发行版名，与文档一致
 WSL_DISTRO_NAME = "InsarUbuntu24"
@@ -352,7 +355,7 @@ def finish_deploy_configuration(
     导入后写入 wsl_config、CDS（Windows + WSL）、气象缓存目录。
     返回 (成功, 给用户看的摘要信息)。
     """
-    from packaging.wsl_sanitize import ensure_weather_dir_windows, push_cdsapirc_to_wsl
+    from wsl_sanitize import ensure_weather_dir_windows, push_cdsapirc_to_wsl
     from wsl_config_path import write_cdsapirc_windows
 
     notes: list[str] = []
@@ -388,7 +391,7 @@ def finish_deploy_configuration(
             return False, f"写入 WSL CDS 配置失败：{msg_cds}"
         notes.append(msg_cds)
     else:
-        from packaging.wsl_sanitize import sync_cdsapirc_from_windows_to_wsl
+        from wsl_sanitize import sync_cdsapirc_from_windows_to_wsl
 
         ok_cds, msg_cds = sync_cdsapirc_from_windows_to_wsl(
             WSL_DISTRO_NAME,

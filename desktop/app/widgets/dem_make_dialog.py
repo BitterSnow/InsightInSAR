@@ -56,6 +56,7 @@ class DemStitchWorker(QThread):
         output_dir: str,
         output_name: Optional[str],
         parent=None,
+        correct_egm96: bool = True,
     ):
         super().__init__(parent)
         self._bbox_south = bbox_south
@@ -65,6 +66,7 @@ class DemStitchWorker(QThread):
         self._dem_raw_dir = dem_raw_dir
         self._output_dir = output_dir
         self._output_name = output_name or ""
+        self._correct_egm96 = correct_egm96
 
     def run(self) -> None:
         try:
@@ -81,6 +83,7 @@ class DemStitchWorker(QThread):
                 dem_raw_dir=self._dem_raw_dir,
                 output_dir=self._output_dir,
                 output_name=self._output_name.strip() or None,
+                correct_egm96=self._correct_egm96,
                 timeout=3600,
                 stream_callback=on_line,
             )
@@ -132,6 +135,7 @@ class DemMakeDialog(QDialog):
         title.setFont(QFont("Segoe UI", 11, QFont.Weight.DemiBold))
         subtitle = QLabel(
             "DEM 原始数据存放目录；缺瓦片时从 ESA 下载，再在 WSL（Ubuntu）内用 dem.py 拼接。"
+            "默认启用 EGM96→WGS84 椭球高改正（dem.py -c）。"
             "网络盘（如 N:）若 WSL 未自动挂载，程序会尝试 drvfs 补挂。"
         )
         subtitle.setStyleSheet("color: #94a3b8; font-size: 12px;")
@@ -331,6 +335,7 @@ class DemMakeDialog(QDialog):
             output_dir=output_dir,
             output_name=out_name,
             parent=self,
+            correct_egm96=True,
         )
         self._worker.log_line.connect(self._on_log_line)
         self._worker.finished_with_result.connect(self._on_finished)
@@ -346,13 +351,29 @@ class DemMakeDialog(QDialog):
         self.close_btn.setEnabled(True)
         if result.get("success"):
             out_path = result.get("output_path")
+            datum = result.get("vertical_datum") or ""
+            conv = result.get("conversion_applied")
+            val = result.get("validation_message") or ""
             msg = "DEM 制作已完成。"
             if out_path:
                 msg += f"\n输出: {out_path}"
                 self.dem_succeeded.emit(out_path)
             else:
                 msg += f"\n请到输出目录查看: {self.output_dir_edit.text().strip()}"
-            logger.info("DEM 制作完成: output_path=%s", out_path)
+            if datum:
+                msg += f"\n垂直基准: {datum}"
+            if conv is not None:
+                msg += f"\nEGM96→WGS84 转换: {'是' if conv else '否'}"
+            if val:
+                self.log_edit.appendPlainText(f"完整性校验: {val}")
+            if result.get("xml_path"):
+                self.log_edit.appendPlainText(f"XML: {result.get('xml_path')}")
+            if result.get("vrt_path"):
+                self.log_edit.appendPlainText(f"VRT: {result.get('vrt_path')}")
+            logger.info(
+                "DEM 制作完成: output_path=%s vertical_datum=%s conversion_applied=%s",
+                out_path, datum, conv,
+            )
             QMessageBox.information(self, "完成", msg)
         else:
             err = result.get("error_message") or result.get("stdout") or "未知错误"

@@ -13,8 +13,11 @@ from pathlib import Path
 
 # 支持从项目根或 packaging 目录运行
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+_PKG_DIR = Path(__file__).resolve().parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+if str(_PKG_DIR) not in sys.path:
+    sys.path.insert(0, str(_PKG_DIR))
 
 
 def _is_frozen() -> bool:
@@ -112,7 +115,7 @@ def run_export(
     if target.suffix.lower() != ".tar":
         return False, "导出文件必须是 .tar。"
     target.parent.mkdir(parents=True, exist_ok=True)
-    from packaging.wsl_sanitize import run_wsl_sanitize_before_export
+    from wsl_sanitize import run_wsl_sanitize_before_export
 
     ok_san, msg_san = run_wsl_sanitize_before_export(
         distro,

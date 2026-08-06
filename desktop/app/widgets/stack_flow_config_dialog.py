@@ -192,7 +192,10 @@ class StackFlowConfigDialog(QDialog):
         header_layout = QVBoxLayout(header)
         title = QLabel("Stack 流程配置")
         title.setFont(QFont("Segoe UI", 11, QFont.Weight.DemiBold))
-        subtitle = QLabel("配置工作目录、SLC、DEM、轨道等，初始化后生成流程步骤（解压参考景、解压从景、合并 SLC 等），在流程界面内按步运行。")
+        subtitle = QLabel(
+            "配置工作目录、SLC、DEM、轨道等。进入 MintPy 时间序列请选 Workflow = interferogram，"
+            "初始化后在流程界面按步运行至解缠完成。"
+        )
         subtitle.setStyleSheet("color: #94a3b8; font-size: 12px;")
         subtitle.setWordWrap(True)
         header_layout.addWidget(title)
@@ -303,8 +306,31 @@ class StackFlowConfigDialog(QDialog):
         grp_layout.addRow("参考日期:", self.reference_date_edit)
 
         self.workflow_combo = QComboBox()
-        self.workflow_combo.addItems(["interferogram", "slc", "correlation", "offset"])
+        self._workflow_values = (
+            "interferogram",
+            "slc",
+            "correlation",
+            "offset",
+        )
+        self._workflow_labels = (
+            "interferogram（干涉时间序列，MintPy 推荐）",
+            "slc（仅 SLC 合并，不生成干涉图）",
+            "correlation（相干图）",
+            "offset（偏移量）",
+        )
+        for label in self._workflow_labels:
+            self.workflow_combo.addItem(label)
+        self.workflow_combo.setToolTip(
+            "进入 MintPy 时间序列请选 interferogram。\n"
+            "slc 只合并 SLC，不会生成 merged/interferograms，无法做 MintPy。"
+        )
+        self.workflow_combo.currentIndexChanged.connect(self._on_workflow_changed)
         grp_layout.addRow("Workflow:", self.workflow_combo)
+
+        self._workflow_hint_label = QLabel()
+        self._workflow_hint_label.setWordWrap(True)
+        self._workflow_hint_label.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        grp_layout.addRow("", self._workflow_hint_label)
 
         self.swaths_edit = QLineEdit()
         self.swaths_edit.setPlaceholderText("根据工作范围自动计算 或 手动填写（如 1 2 3）")
@@ -325,8 +351,14 @@ class StackFlowConfigDialog(QDialog):
         grp_layout.addRow("配准:", self.coregistration_combo)
 
         self.num_connections_edit = QLineEdit()
-        self.num_connections_edit.setText("1")
-        grp_layout.addRow("连接数:", self.num_connections_edit)
+        self.num_connections_edit.setText("3")
+        self.num_connections_edit.setPlaceholderText("干涉网络每景最大连接数，建议 2–3")
+        self.num_connections_edit.setToolTip(
+            "仅 interferogram / correlation / offset 流程使用。\n"
+            "表示时间序列网络中每个 SAR 影像最多连接的干涉对数量；slc 流程无此项。"
+        )
+        self._connections_label = QLabel("连接数:")
+        grp_layout.addRow(self._connections_label, self.num_connections_edit)
 
         self.num_process_spin = QSpinBox()
         self.num_process_spin.setRange(1, 32)
@@ -368,6 +400,52 @@ class StackFlowConfigDialog(QDialog):
         layout.addLayout(btn_layout)
 
         self._last_work_dir: str | None = None
+        self._update_workflow_ui()
+
+    def _current_workflow(self) -> str:
+        idx = self.workflow_combo.currentIndex()
+        if 0 <= idx < len(self._workflow_values):
+            return self._workflow_values[idx]
+        return self.workflow_combo.currentText().split("（")[0].strip() or "interferogram"
+
+    def _set_workflow_by_value(self, workflow: str) -> None:
+        w = (workflow or "").strip().lower()
+        for i, val in enumerate(self._workflow_values):
+            if val == w:
+                self.workflow_combo.setCurrentIndex(i)
+                return
+        idx = self.workflow_combo.findText(w, Qt.MatchFlag.MatchStartsWith)
+        if idx >= 0:
+            self.workflow_combo.setCurrentIndex(idx)
+
+    @Slot()
+    def _on_workflow_changed(self) -> None:
+        self._update_workflow_ui()
+
+    def _update_workflow_ui(self) -> None:
+        wf = self._current_workflow()
+        is_slc = wf == "slc"
+        self._connections_label.setVisible(not is_slc)
+        self.num_connections_edit.setVisible(not is_slc)
+        if wf == "interferogram":
+            cur = self.num_connections_edit.text().strip()
+            if not cur or cur == "1":
+                self.num_connections_edit.setText("3")
+            self._workflow_hint_label.setText(
+                "将生成 merged/interferograms，跑完干涉与解缠后可进入 MintPy 时间序列。"
+            )
+            self._workflow_hint_label.setStyleSheet("color: #22c55e; font-size: 12px;")
+        elif is_slc:
+            self._workflow_hint_label.setText(
+                "仅合并 SLC，不生成干涉图；完成后无法直接进入 MintPy，请勿与时间序列流程混用。"
+            )
+            self._workflow_hint_label.setStyleSheet("color: #f59e0b; font-size: 12px;")
+        elif wf == "correlation":
+            self._workflow_hint_label.setText("生成相干图产品；若需 MintPy，请改用 interferogram。")
+            self._workflow_hint_label.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        else:
+            self._workflow_hint_label.setText("生成偏移量产品；若需 MintPy，请改用 interferogram。")
+            self._workflow_hint_label.setStyleSheet("color: #94a3b8; font-size: 12px;")
 
     def _prefill_from_project(self) -> None:
         """根据工程定义文件预填工作目录、处理范围、数据目录等。"""
@@ -462,9 +540,7 @@ class StackFlowConfigDialog(QDialog):
                 if si.get("reference_date"):
                     self.reference_date_edit.setText(str(si["reference_date"]).strip())
                 if si.get("workflow"):
-                    idx = self.workflow_combo.findText(str(si["workflow"]).strip())
-                    if idx >= 0:
-                        self.workflow_combo.setCurrentIndex(idx)
+                    self._set_workflow_by_value(str(si["workflow"]).strip())
                 if si.get("coregistration"):
                     idx = self.coregistration_combo.findText(str(si["coregistration"]).strip())
                     if idx >= 0:
@@ -476,6 +552,7 @@ class StackFlowConfigDialog(QDialog):
         except Exception:
             if self._default_project_path:
                 self.work_dir_edit.setText(os.path.join(self._default_project_path, "processing", "stack"))
+        self._update_workflow_ui()
 
     def _save_to_project(self) -> None:
         """将当前表单内容写入工程文件，供下次打开预填。"""
@@ -518,11 +595,15 @@ class StackFlowConfigDialog(QDialog):
                 "swaths": swaths_val if swaths_val else "",
                 "polarization": self.polarization_combo.currentText(),
             }
+            wf = self._current_workflow()
+            conn = ""
+            if wf != "slc":
+                conn = self.num_connections_edit.text().strip() or "3"
             data["stack_init"] = {
                 "reference_date": self.reference_date_edit.text().strip(),
-                "workflow": self.workflow_combo.currentText(),
+                "workflow": wf,
                 "coregistration": self.coregistration_combo.currentText(),
-                "num_connections": self.num_connections_edit.text().strip() or "1",
+                "num_connections": conn,
                 "num_process": self.num_process_spin.value(),
             }
             write_project(proj_path, data)
@@ -574,6 +655,21 @@ class StackFlowConfigDialog(QDialog):
             )
             return None
 
+        wf = self._current_workflow()
+        if wf == "slc":
+            reply = QMessageBox.question(
+                self,
+                "确认 SLC 流程",
+                "当前为 slc 流程：只合并 SLC，不会生成 merged/interferograms，\n"
+                "完成后无法直接进入 MintPy 时间序列。\n\n"
+                "若要做时间序列分析，请改选 interferogram 流程。\n\n"
+                "仍使用 slc 流程初始化？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return None
+
         return {
             "work_dir": work_dir,
             "slc_dir": slc_dir,
@@ -582,7 +678,7 @@ class StackFlowConfigDialog(QDialog):
             "aux_dir": aux_dir,
             "bbox_snwe": bbox_snwe,
             "reference_date": self.reference_date_edit.text().strip() or None,
-            "workflow": self.workflow_combo.currentText(),
+            "workflow": wf,
             "swaths": self.swaths_edit.text().strip(),
             "polarization": self.polarization_combo.currentText(),
             "exclude_dates": None,
@@ -590,7 +686,11 @@ class StackFlowConfigDialog(QDialog):
             "start_date": None,
             "stop_date": None,
             "coregistration": self.coregistration_combo.currentText(),
-            "num_connections": self.num_connections_edit.text().strip() or "1",
+            "num_connections": (
+                self.num_connections_edit.text().strip() or "3"
+                if wf != "slc"
+                else "1"
+            ),
             "num_process": self.num_process_spin.value(),
         }
 

@@ -9,7 +9,7 @@ REPO_ROOT = Path(SPECPATH).resolve().parent
 
 a = Analysis(
     [str(REPO_ROOT / "packaging" / "wsl_deploy_wizard.py")],
-    pathex=[str(REPO_ROOT)],
+    pathex=[str(REPO_ROOT), str(REPO_ROOT / "packaging")],
     binaries=[],
     datas=[(str(REPO_ROOT / "packaging" / "wizard_icon.ico"), ".")],
     hiddenimports=[
@@ -18,7 +18,7 @@ a = Analysis(
         "PySide6.QtWidgets",
         "PySide6.QtGui",
         "wsl_config_path",
-        "packaging.wsl_sanitize",
+        "wsl_sanitize",
         "cds_wsl_bridge",
     ],
     hookspath=[],

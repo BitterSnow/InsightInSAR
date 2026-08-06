@@ -39,6 +39,7 @@ a = Analysis(
         "shapely.ops",
         "qt_material",
         "qtawesome",
+        "h5py",
     ],
     hookspath=[],
     hooksconfig={},

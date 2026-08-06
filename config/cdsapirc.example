@@ -6,4 +6,4 @@
 # 若 CDS 要求 uid:api-key 格式，请将 key 改为 <你的uid>:<api-key>
 # 可用脚本写入主目录: python scripts/setup_cdsapirc.py --key "你的key"
 url: https://cds.climate.copernicus.eu/api
-key: YOUR_UID:YOUR_API_KEY
+key: YOUR_API_KEY

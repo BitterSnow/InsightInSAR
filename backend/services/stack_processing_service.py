@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from typing import Any, Callable, Dict, List, Optional
 
@@ -510,15 +511,20 @@ def run_stack_step(
 
 def _load_pipeline_state(work_dir: str) -> Dict[str, str]:
     """Load pipeline_state.json from work_dir. Returns step_id -> status (e.g. success). WSL-aware."""
+    return load_pipeline_state(work_dir).get("steps") or {}
+
+
+def load_pipeline_state(work_dir: str) -> Dict[str, Any]:
+    """读取 work_dir/pipeline_state.json（含 steps 与 active）。"""
     from backend.services import wsl_runner
+
     if _use_wsl() and (work_dir.startswith("/") or work_dir.startswith("~")):
         path = work_dir.rstrip("/") + "/" + _PIPELINE_STATE_JSON
         result = wsl_runner.run_wsl(f"cat '{path}' 2>/dev/null", timeout=5)
         if not result.get("success") or not (result.get("stdout") or "").strip():
             return {}
         try:
-            data = json.loads((result.get("stdout") or "").strip())
-            return data.get("steps") or {}
+            return json.loads((result.get("stdout") or "").strip())
         except json.JSONDecodeError:
             return {}
     path = os.path.join(work_dir, _PIPELINE_STATE_JSON)
@@ -526,10 +532,144 @@ def _load_pipeline_state(work_dir: str) -> Dict[str, str]:
         return {}
     try:
         with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data.get("steps") or {}
+            return json.load(f)
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def save_pipeline_state(work_dir: str, data: Dict[str, Any]) -> None:
+    """写入 pipeline_state.json（Windows 工作目录路径）。"""
+    path = os.path.join(os.path.abspath(work_dir.replace("/", os.sep)), _PIPELINE_STATE_JSON)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def _probe_stack_wsl_process(work_dir_win: str) -> tuple[bool, str]:
+    """检测 WSL 内针对该 work_dir 的 Stack 步骤进程（严格匹配，避免误报）。"""
+    from backend.services import wsl_runner
+
+    if not _use_wsl():
+        return False, ""
+    wsl_dir = wsl_runner.windows_path_to_wsl(work_dir_win)
+    if not wsl_dir:
+        return False, ""
+    safe = wsl_dir.replace("'", "'\"'\"'")
+    # 仅匹配 run_stack_wsl step 或 SentinelWrapper，且命令行须含本工作目录
+    bash = (
+        f"WD='{safe}'; "
+        "match() { echo \"$1\"; exit 0; }; "
+        "while IFS= read -r line; do "
+        "  case \"$line\" in "
+        "    *run_stack_wsl*step*\"$WD\"*) match \"$line\" ;; "
+        "    *SentinelWrapper.py*\"$WD\"*) match \"$line\" ;; "
+        "    *SentinelWrapper.py*'-c '*\"$WD\"*) match \"$line\" ;; "
+        "  esac; "
+        "done < <(pgrep -af 'run_stack_wsl|SentinelWrapper.py' 2>/dev/null || true); "
+        "exit 1"
+    )
+    result = wsl_runner.run_wsl(f"bash -lc '{bash}'", timeout=20)
+    stdout = (result.get("stdout") or "").strip()
+    return bool(stdout), stdout
+
+
+def _infer_step_id_from_process_line(line: str) -> str:
+    m = re.search(r"--step_id=(?:'|\")?([^\s'\"]+)", line)
+    if m:
+        return m.group(1).strip("'\"")
+    m = re.search(r"INSAR_STACK_STEP_ID=([^\s]+)", line)
+    if m:
+        return m.group(1).strip()
+    return ""
+
+
+def _is_stack_job_running_in_wsl(work_dir_win: str) -> bool:
+    running, _ = _probe_stack_wsl_process(work_dir_win)
+    return running
+
+
+def probe_stack_job(work_dir: str) -> Dict[str, Any]:
+    """
+    探测 Stack 后台任务：结合 pipeline_state.active 与 WSL 进程检测。
+    返回 is_running、active（原样）、step_id、step_index、mode、from_index。
+    """
+    work_dir_win = os.path.abspath(work_dir.replace("/", os.sep))
+    state = load_pipeline_state(work_dir_win)
+    active = state.get("active") if isinstance(state.get("active"), dict) else None
+    is_running, proc_line = _probe_stack_wsl_process(work_dir_win)
+    step_id = (active or {}).get("step_id") or ""
+    if is_running and not step_id:
+        step_id = _infer_step_id_from_process_line(proc_line)
+    return {
+        "is_running": is_running,
+        "active": active,
+        "step_id": step_id or None,
+        "step_index": (active or {}).get("step_index"),
+        "mode": (active or {}).get("mode"),
+        "from_index": (active or {}).get("from_index"),
+        "work_dir": work_dir_win,
+        "steps": state.get("steps") or {},
+        "process_line": proc_line,
+    }
+
+
+def parse_step_log_result(work_dir: str, step_id: str) -> Optional[Dict[str, Any]]:
+    """从 stack_step.log 解析某步骤最近一次执行结果（Return code）。"""
+    if not step_id:
+        return None
+    log_path = os.path.join(os.path.abspath(work_dir.replace("/", os.sep)), "stack_step.log")
+    if not os.path.isfile(log_path):
+        return None
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return None
+    marker = f"[{step_id}]"
+    idx = text.rfind(marker)
+    if idx < 0:
+        return None
+    block = text[idx : idx + 4000]
+    m_end = re.search(r"end:\s*(\S+)", block)
+    m_rc = re.search(r"Return code:\s*(-?\d+)", block)
+    if not m_rc:
+        return None
+    return {
+        "step_id": step_id,
+        "finished": bool(m_end),
+        "returncode": int(m_rc.group(1)),
+        "success": int(m_rc.group(1)) == 0,
+    }
+
+
+def read_stack_log_tail(work_dir: str, max_lines: int = 400) -> str:
+    log_path = os.path.join(os.path.abspath(work_dir.replace("/", os.sep)), "stack_step.log")
+    if not os.path.isfile(log_path):
+        return ""
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        return "".join(lines[-max_lines:])
+    except OSError:
+        return ""
+
+
+def read_stack_log_from_offset(work_dir: str, offset: int) -> tuple[str, int]:
+    log_path = os.path.join(os.path.abspath(work_dir.replace("/", os.sep)), "stack_step.log")
+    if not os.path.isfile(log_path):
+        return "", 0
+    try:
+        size = os.path.getsize(log_path)
+        if offset > size:
+            offset = 0
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            f.seek(offset)
+            chunk = f.read()
+        return chunk, size
+    except OSError:
+        return "", offset
 
 
 def run_stack_steps(

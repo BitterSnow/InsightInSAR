@@ -62,7 +62,7 @@ Write-Host ""
 Write-Host "导出前脱敏（CDS/ERA5）..." -ForegroundColor Yellow
 $Py = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $Py)) { $Py = "python" }
-& $Py -m packaging.wsl_sanitize --distro $Distro
+& $Py (Join-Path $ProjectRoot "packaging\wsl_sanitize.py") --distro $Distro
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[ERROR] WSL 脱敏失败，已中止导出。若仅内部使用可加 -KeepSecrets。" -ForegroundColor Red
     exit 1

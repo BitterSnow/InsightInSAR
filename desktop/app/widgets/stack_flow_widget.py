@@ -101,6 +101,73 @@ class StackSingleStepWorker(QThread):
             self.step_finished.emit(False, str(e))
 
 
+class StackJobMonitorWorker(QThread):
+    """轮询 WSL 后台 Stack 任务与 stack_step.log，界面关闭后重新打开时恢复监控。"""
+
+    log_appended = Signal(str)
+    job_finished = Signal(bool, str, int)  # success, error_message, step_index
+
+    def __init__(self, work_dir: str, step_index: int, step_id: str = "", parent=None):
+        super().__init__(parent)
+        self._work_dir = work_dir
+        self._step_index = step_index
+        self._step_id = step_id
+        self._stop = False
+        self._log_offset = 0
+
+    def stop(self) -> None:
+        self._stop = True
+
+    def run(self) -> None:
+        from backend.services.stack_processing_service import (
+            probe_stack_job,
+            parse_step_log_result,
+            read_stack_log_from_offset,
+        )
+
+        try:
+            _, self._log_offset = read_stack_log_from_offset(self._work_dir, 0)
+        except Exception:
+            self._log_offset = 0
+
+        while not self._stop:
+            chunk, self._log_offset = read_stack_log_from_offset(self._work_dir, self._log_offset)
+            if chunk:
+                self.log_appended.emit(chunk.rstrip("\n"))
+
+            probe = probe_stack_job(self._work_dir)
+            if probe.get("is_running"):
+                self.msleep(2000)
+                continue
+
+            step_id = self._step_id or probe.get("step_id") or ""
+            if not step_id and isinstance(probe.get("active"), dict):
+                step_id = probe["active"].get("step_id") or ""
+            result = parse_step_log_result(self._work_dir, step_id) if step_id else None
+            if result and result.get("finished"):
+                if result.get("success"):
+                    self.job_finished.emit(True, "completed", self._step_index)
+                else:
+                    self.job_finished.emit(
+                        False,
+                        f"步骤 {step_id} 返回码 {result.get('returncode')}",
+                        self._step_index,
+                    )
+                return
+
+            # active 记录存在但进程已结束且日志尚无完整块
+            if probe.get("active"):
+                self.job_finished.emit(
+                    False,
+                    "后台任务已结束，但未在日志中找到完成记录，请查看 stack_step.log。",
+                    self._step_index,
+                )
+                return
+            # 进程已结束且无 active：仅释放界面
+            self.job_finished.emit(False, "", self._step_index)
+            return
+
+
 class StackStepRunnerWorker(QThread):
     """后台执行从某步起至结束；本机 subprocess 调用 SentinelWrapper，带 progress 回调。"""
     progress_updated = Signal(float, str)
@@ -149,6 +216,8 @@ class StackFlowWidget(QWidget):
         self._step_status: List[str] = []  # pending/running/success/fail
         self._worker: StackStepRunnerWorker | None = None
         self._single_step_worker: StackSingleStepWorker | None = None
+        self._monitor_worker: StackJobMonitorWorker | None = None
+        self._monitor_step_index = -1
         self._running_from_index = 0
         self._single_step_index = -1  # 当前单步运行对应的表格行，用于结束后更新状态
         self._step_durations: List[float | None] = []  # 每步耗时（秒），用于表格「耗时」列
@@ -377,6 +446,11 @@ class StackFlowWidget(QWidget):
         self._update_log_path_label()
         self._update_progress_summary()
         self._apply_pipeline_dependent_controls()
+        self._try_resume_active_job()
+
+    def closeEvent(self, event) -> None:
+        self._stop_job_monitor()
+        super().closeEvent(event)
 
     def _load_step_state(self) -> None:
         """从 work_dir/pipeline_state.json 合并步骤状态。"""
@@ -389,23 +463,197 @@ class StackFlowWidget(QWidget):
             states = data.get("steps") or {}
             for i, step in enumerate(self._steps):
                 step_id = step.get("id", "")
-                if step_id and states.get(step_id) in (STATUS_SUCCESS, STATUS_FAIL):
-                    self._step_status[i] = states[step_id]
+                st = states.get(step_id)
+                if step_id and st in (STATUS_SUCCESS, STATUS_FAIL, STATUS_RUNNING):
+                    self._step_status[i] = st
         except Exception:
             pass
 
-    def _save_step_state(self) -> None:
-        """将当前步骤状态写入 work_dir/pipeline_state.json（单步完成、全线/从本步运行中及结束后都会写入）。"""
+    def _save_step_state(self, *, active: dict | None = None, clear_active: bool = False) -> None:
+        """将步骤状态写入 pipeline_state.json；可附带 active 后台任务信息。"""
         path = os.path.join(self._work_dir.replace("/", os.sep), PIPELINE_STATE_FILE)
+        existing: dict = {}
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+            except Exception:
+                existing = {}
         try:
             states = {}
             for i, step in enumerate(self._steps):
                 if i < len(self._step_status):
                     states[step.get("id", "")] = self._step_status[i]
+            data: dict = {"steps": states}
+            if clear_active:
+                pass
+            elif active is not None:
+                data["active"] = active
+            elif isinstance(existing.get("active"), dict):
+                data["active"] = existing["active"]
             with open(path, "w", encoding="utf-8") as f:
-                json.dump({"steps": states}, f, ensure_ascii=False, indent=2)
+                json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
+
+    def _build_active_record(self, step_index: int, mode: str) -> dict:
+        step = self._steps[step_index] if 0 <= step_index < len(self._steps) else {}
+        return {
+            "step_id": step.get("id", ""),
+            "step_index": step_index,
+            "mode": mode,
+            "from_index": self._running_from_index if mode == "batch" else step_index,
+            "started_at": time.time(),
+        }
+
+    def _is_background_job_running(self) -> bool:
+        if self._single_step_worker and self._single_step_worker.isRunning():
+            return True
+        if self._worker and self._worker.isRunning():
+            return True
+        try:
+            from backend.services.stack_processing_service import probe_stack_job
+
+            wsl_running = bool(probe_stack_job(self._work_dir).get("is_running"))
+        except Exception:
+            wsl_running = False
+        if not wsl_running and self._monitor_worker and self._monitor_worker.isRunning():
+            self._stop_job_monitor()
+        return wsl_running
+
+    def _try_resume_active_job(self) -> None:
+        """重新打开界面时：若 WSL 内仍有 Stack 任务在跑，恢复状态与日志监控。"""
+        if self._monitor_worker and self._monitor_worker.isRunning():
+            return
+        try:
+            from backend.services.stack_processing_service import (
+                probe_stack_job,
+                parse_step_log_result,
+                read_stack_log_tail,
+            )
+        except Exception:
+            return
+
+        probe = probe_stack_job(self._work_dir)
+        active = probe.get("active")
+        step_id = probe.get("step_id") or (active or {}).get("step_id") or ""
+        step_index = probe.get("step_index")
+        if step_index is None and step_id:
+            for i, step in enumerate(self._steps):
+                if step.get("id") == step_id:
+                    step_index = i
+                    break
+        if step_index is None:
+            for i, st in enumerate(self._step_status):
+                if st == STATUS_RUNNING:
+                    step_index = i
+                    if not step_id and i < len(self._steps):
+                        step_id = self._steps[i].get("id", "")
+                    break
+        step_index = int(step_index if step_index is not None else -1)
+
+        if not probe.get("is_running"):
+            self._finalize_idle_background_state(probe, step_id, step_index)
+            return
+
+        if probe.get("is_running"):
+            if 0 <= step_index < len(self._step_status):
+                if probe.get("mode") == "batch":
+                    from_index = int(probe.get("from_index") or step_index)
+                    self._running_from_index = from_index
+                    for i in range(from_index, step_index):
+                        if self._step_status[i] != STATUS_SUCCESS:
+                            self._update_step_status(i, STATUS_SUCCESS)
+                self._update_step_status(step_index, STATUS_RUNNING)
+                self._monitor_step_index = step_index
+                self._single_step_index = step_index if probe.get("mode") == "single" else -1
+                if step_index < len(self._row_progress_bars):
+                    self._row_progress_bars[step_index].setRange(0, 0)  # 不确定进度
+                    self._row_progress_bars[step_index].setVisible(True)
+            self._log_edit.setPlainText(read_stack_log_tail(self._work_dir))
+            self._log_edit.appendPlainText("\n[已恢复监控后台任务，完成后将自动更新状态]")
+            self._set_buttons_enabled(False)
+            self._update_status_tag(True)
+            self._attach_job_monitor(step_index, step_id)
+            if not active and 0 <= step_index:
+                mode = probe.get("mode") or "single"
+                if mode == "batch":
+                    self._running_from_index = int(probe.get("from_index") or step_index)
+                self._save_step_state(active=self._build_active_record(step_index, mode))
+            return
+
+    def _stop_job_monitor(self) -> None:
+        if self._monitor_worker and self._monitor_worker.isRunning():
+            self._monitor_worker.stop()
+            self._monitor_worker.wait(3000)
+        if self._monitor_worker:
+            self._monitor_worker.deleteLater()
+            self._monitor_worker = None
+        self._monitor_step_index = -1
+
+    def _finalize_idle_background_state(
+        self, probe: dict, step_id: str, step_index: int
+    ) -> None:
+        """无 WSL 进程时：清理 active、复位「运行中」步骤，恢复可操作按钮。"""
+        from backend.services.stack_processing_service import parse_step_log_result
+
+        active = probe.get("active")
+        if active and step_id:
+            result = parse_step_log_result(self._work_dir, step_id)
+            if result and result.get("finished") and 0 <= step_index < len(self._step_status):
+                self._update_step_status(
+                    step_index,
+                    STATUS_SUCCESS if result.get("success") else STATUS_FAIL,
+                )
+        for i, st in enumerate(self._step_status):
+            if st == STATUS_RUNNING:
+                self._update_step_status(i, STATUS_PENDING)
+                if i < len(self._row_progress_bars):
+                    self._row_progress_bars[i].setRange(0, 100)
+                    self._row_progress_bars[i].setValue(0)
+                    self._row_progress_bars[i].setVisible(False)
+        self._stop_job_monitor()
+        self._save_step_state(clear_active=True)
+        self._update_status_tag(False)
+        self._set_buttons_enabled(True)
+        self._apply_pipeline_dependent_controls()
+
+    def _attach_job_monitor(self, step_index: int, step_id: str = "") -> None:
+        if self._monitor_worker and self._monitor_worker.isRunning():
+            return
+        self._monitor_worker = StackJobMonitorWorker(self._work_dir, step_index, step_id, self)
+        self._monitor_worker.log_appended.connect(self._on_monitor_log)
+        self._monitor_worker.job_finished.connect(self._on_monitor_finished)
+        self._monitor_worker.start()
+
+    def _on_monitor_log(self, chunk: str) -> None:
+        if chunk:
+            self._log_edit.appendPlainText(chunk)
+
+    def _on_monitor_finished(self, success: bool, error_message: str, step_index: int) -> None:
+        if self._monitor_worker:
+            self._monitor_worker.deleteLater()
+            self._monitor_worker = None
+        self._monitor_step_index = -1
+        self._single_step_index = -1
+        self._set_buttons_enabled(True)
+        self._update_status_tag(False)
+        if 0 <= step_index < len(self._row_progress_bars):
+            self._row_progress_bars[step_index].setRange(0, 100)
+            self._row_progress_bars[step_index].setValue(100 if success else 0)
+            self._row_progress_bars[step_index].setVisible(success and error_message == "completed")
+        if error_message == "completed" and 0 <= step_index < len(self._step_status):
+            self._update_step_status(step_index, STATUS_SUCCESS)
+            self._log_edit.appendPlainText("后台步骤已完成。")
+            self._progress_bar.setValue(100)
+            self._progress_pct_label.setText("100%")
+        elif error_message and error_message != "completed" and 0 <= step_index < len(self._step_status):
+            self._update_step_status(step_index, STATUS_FAIL)
+            self._log_edit.appendPlainText(error_message)
+            QMessageBox.warning(self, "步骤失败", _truncate_error_for_popup(error_message))
+        self._save_step_state(clear_active=True)
+        self._update_progress_summary()
+        self._apply_pipeline_dependent_controls()
 
     def _update_log_path_label(self) -> None:
         log_path = os.path.join(self._work_dir, "stack_step.log")
@@ -683,6 +931,7 @@ class StackFlowWidget(QWidget):
                 item.setText(self._status_text(status))
                 apply_status_style(item, status)
             if index < len(self._row_progress_bars):
+                self._row_progress_bars[index].setRange(0, 100)
                 self._row_progress_bars[index].setVisible(status == STATUS_RUNNING)
                 if status != STATUS_RUNNING:
                     self._row_progress_bars[index].setValue(0)
@@ -692,9 +941,7 @@ class StackFlowWidget(QWidget):
         """无有效步骤时禁用运行与时间序列入口，并显示「初始化流程」。"""
         ok = len(self._steps) > 0
         self._stack_init_btn.setVisible(not ok)
-        idle = not (self._worker and self._worker.isRunning()) and not (
-            self._single_step_worker and self._single_step_worker.isRunning()
-        )
+        idle = not self._is_background_job_running()
         self._run_one_btn.setEnabled(idle and ok)
         self._run_from_btn.setEnabled(idle and ok)
         self._run_all_btn.setEnabled(idle and ok)
@@ -737,6 +984,14 @@ class StackFlowWidget(QWidget):
     def _run_single_step(self, index: int) -> None:
         if index < 0 or index >= len(self._steps):
             return
+        if self._is_background_job_running():
+            QMessageBox.information(
+                self,
+                "运行",
+                "检测到该工作目录仍有 Stack 步骤在后台运行，请等待完成或先重新打开本页恢复监控。",
+            )
+            self._try_resume_active_job()
+            return
         if self._single_step_worker and self._single_step_worker.isRunning():
             return
         # 先锁定运行行，避免后续禁用按钮导致焦点跳转把选中行带跑
@@ -749,6 +1004,7 @@ class StackFlowWidget(QWidget):
         QTimer.singleShot(0, self._enforce_running_row_selection)
         self._update_step_status(index, STATUS_RUNNING)
         self._update_status_tag(True)
+        self._save_step_state(active=self._build_active_record(index, "single"))
         self._log_edit.clear()
         self._progress_bar.setValue(0)
         self._progress_pct_label.setText("0%")
@@ -809,7 +1065,7 @@ class StackFlowWidget(QWidget):
             self._progress_bar.setValue(100)
             self._progress_pct_label.setText("100%")
             self._log_edit.appendPlainText("步骤完成。")
-            self._save_step_state()
+            self._save_step_state(clear_active=True)
             # 单步成功后再自动跳到下一行
             next_row = min(idx + 1, self._table.rowCount() - 1)
             if next_row != idx and next_row >= 0:
@@ -817,7 +1073,7 @@ class StackFlowWidget(QWidget):
                 self._table.selectRow(next_row)
         else:
             self._update_step_status(idx, STATUS_FAIL)
-            self._save_step_state()
+            self._save_step_state(clear_active=True)
             self._progress_bar.setValue(0)
             self._log_edit.appendPlainText("")
             self._log_edit.appendPlainText("失败原因：")
@@ -848,8 +1104,18 @@ class StackFlowWidget(QWidget):
     def _run_steps_from(self, from_index: int) -> None:
         if from_index < 0 or from_index >= len(self._steps):
             return
+        if self._is_background_job_running():
+            QMessageBox.information(
+                self,
+                "运行",
+                "检测到该工作目录仍有 Stack 步骤在后台运行，请等待完成或先重新打开本页恢复监控。",
+            )
+            self._try_resume_active_job()
+            return
         self._set_buttons_enabled(False)
         self._update_status_tag(True)
+        self._running_from_index = from_index
+        self._save_step_state(active=self._build_active_record(from_index, "batch"))
         # 只将未完成的步骤设为待运行，不覆盖已成功的状态
         for i in range(from_index, len(self._steps)):
             if self._step_status[i] != STATUS_SUCCESS:
@@ -858,7 +1124,6 @@ class StackFlowWidget(QWidget):
         self._progress_bar.setValue(0)
         self._progress_pct_label.setText("0%")
 
-        self._running_from_index = from_index
         self._worker = StackStepRunnerWorker(self._work_dir, from_index, self)
         self._worker.progress_updated.connect(self._on_worker_progress)
         self._worker.all_finished.connect(self._on_worker_all_finished)
@@ -881,7 +1146,7 @@ class StackFlowWidget(QWidget):
                     for i in range(self._running_from_index, cur_index):
                         self._update_step_status(i, STATUS_SUCCESS)
                     self._update_step_status(cur_index, STATUS_RUNNING)
-                    self._save_step_state()
+                    self._save_step_state(active=self._build_active_record(cur_index, "batch"))
                 if cur_index < len(self._row_progress_bars) and "跳过" not in msg:
                     self._row_progress_bars[cur_index].setValue(int(pct))
                     self._row_progress_bars[cur_index].setVisible(True)
@@ -898,7 +1163,7 @@ class StackFlowWidget(QWidget):
             self._log_edit.appendPlainText("")
             self._log_edit.appendPlainText("失败原因：")
             self._log_edit.appendPlainText(error_message or "执行失败")
-            self._save_step_state()
+            self._save_step_state(clear_active=True)
             QMessageBox.warning(
                 self, "执行结束", _truncate_error_for_popup(error_message or "执行失败")
             )
@@ -906,7 +1171,7 @@ class StackFlowWidget(QWidget):
             self._log_edit.appendPlainText("全部步骤完成。")
             for i in range(self._running_from_index, len(self._steps)):
                 self._update_step_status(i, STATUS_SUCCESS)
-            self._save_step_state()
+            self._save_step_state(clear_active=True)
             QMessageBox.information(self, "执行结束", "全部步骤已完成。")
 
     def set_work_dir(self, work_dir: str) -> None:

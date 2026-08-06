@@ -30,6 +30,13 @@ HEADING_SLUG_MAP = {
     "第三部分 软件使用": "03-usage",
     "第三部分": "03-usage",
     "结尾": "99-closing",
+    "第1页 视频封面": "slide-01-cover",
+    "第2页 软件设计理念": "slide-02-philosophy",
+    "第3页 总体架构": "slide-03-architecture",
+    "第4页 WSL介绍": "slide-04-wsl",
+    "第5页 ISCE2介绍": "slide-05-isce2",
+    "第6页 MintPy介绍": "slide-06-mintpy",
+    "第7页 完整处理链路": "slide-07-workflow",
 }
 
 
@@ -116,8 +123,21 @@ def split_by_h2(md: str) -> list[tuple[str, str]]:
 async def synthesize(text: str, out_path: Path, voice: str, rate: str) -> None:
     import edge_tts
 
-    communicate = edge_tts.Communicate(text, voice=voice, rate=rate)
-    await communicate.save(str(out_path))
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            communicate = edge_tts.Communicate(text, voice=voice, rate=rate)
+            await communicate.save(str(out_path))
+            return
+        except Exception as exc:
+            last_error = exc
+            if out_path.exists():
+                out_path.unlink()
+            if attempt < 3:
+                print(f"Retrying {out_path.name} ({attempt}/3): {exc}")
+                await asyncio.sleep(2 * attempt)
+    assert last_error is not None
+    raise last_error
 
 
 async def list_zh_voices() -> None:
@@ -142,6 +162,9 @@ async def run_batch(
             continue
         name = f"{prefix}{i:02d}-{slug}.mp3" if len(sections) > 1 else f"{prefix}{slug}.mp3"
         out_path = out_dir / name
+        if out_path.is_file() and out_path.stat().st_size > 0:
+            print(f"Skipping existing {out_path}")
+            continue
         print(f"Generating {out_path} ({len(text)} chars)...")
         await synthesize(text, out_path, voice, rate)
     print(f"Done. {len(sections)} file(s) in {out_dir}")

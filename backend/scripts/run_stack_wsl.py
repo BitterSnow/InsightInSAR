@@ -27,7 +27,7 @@ def _project_root() -> str:
 
 
 def _apply_tops_stack_runtime_env(env: dict, tops_stack_dir: str) -> None:
-    """PATH 指向 topsStack 脚本目录；PYTHONPATH 指向其父目录以便 import topsStack。"""
+    """PATH 指向 topsStack 脚本目录及 ISCE2 applications 目录（looks.py/dem.py 等）；PYTHONPATH 指向其父目录以便 import topsStack。"""
     tops_stack_dir = tops_stack_dir.rstrip("/")
     stack_pp = (os.environ.get("INSAR_ISCE2_STACK_PYTHONPATH") or "").strip()
     if not stack_pp:
@@ -45,7 +45,16 @@ def _apply_tops_stack_runtime_env(env: dict, tops_stack_dir: str) -> None:
         existing = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = stack_pp + (os.pathsep + existing if existing else "")
     path_sep = os.pathsep
-    env["PATH"] = tops_stack_dir + path_sep + env.get("PATH", "")
+    path_entries = [tops_stack_dir]
+    # topsStack 内部脚本（如 overlap_withDEM.py 的 multilook）通过 shell 调用 looks.py 等
+    # applications 下的命令行工具；ISCE2 conda 安装未必在 bin/ 下提供这些 wrapper，需显式加入 PATH。
+    isce_main = (os.environ.get("INSAR_WSL_ISCE2_MAIN") or "").strip().rstrip("/")
+    if isce_main:
+        apps_dir = f"{isce_main}/applications"
+        if os.path.isdir(apps_dir):
+            path_entries.append(apps_dir)
+    path_entries.append(env.get("PATH", ""))
+    env["PATH"] = path_sep.join(p for p in path_entries if p)
 
 
 def _tops_stack(root: str) -> str:
